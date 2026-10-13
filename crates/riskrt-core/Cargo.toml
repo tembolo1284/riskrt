@@ -1,0 +1,9 @@
+[package]
+name = "riskrt-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+# Deliberately empty. Core is plain data: no threads, no I/O, no third-party crates.
