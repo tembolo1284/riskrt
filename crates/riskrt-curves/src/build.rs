@@ -4,10 +4,10 @@ use crate::error::CurveBuildError;
 use crate::spec::CurveSpec;
 use fq_core::time::Date;
 use fq_rates::curve::{
-    BootstrapConfig, BootstrapInstrument, CurveError, CurveJacobian, DiscountCurve, bootstrap_sofr,
+    BootstrapConfig, BootstrapInstrument, CurveError, CurveJacobian, DiscountCurve, InstrumentKey,
+    bootstrap_sofr,
 };
 use fq_rates::index::OvernightIndex;
-use fq_rates::swap::Tenor;
 use rayon::prelude::*;
 use riskrt_core::{CurveId, MarketVersion, QuoteId};
 use riskrt_market::QuoteSnapshot;
@@ -75,7 +75,7 @@ pub fn build_curve(
     let instruments = spec
         .pillars
         .iter()
-        .map(|p| Ok(BootstrapInstrument::ois(p.tenor, rate_of(p.quote)?)))
+        .map(|p| Ok(p.instrument(rate_of(p.quote)?)))
         .collect::<Result<Vec<_>, CurveBuildError>>()?;
 
     let base = bootstrap_sofr(valuation, index, &instruments, cfg.bootstrap)?;
@@ -83,17 +83,17 @@ pub fn build_curve(
 
     // Re-order pillars into node order so Jacobian column j, ladder bucket j
     // and pillar_quotes[j] all refer to the same instrument.
-    let tenors: Vec<Tenor> = base.nodes.iter().map(|(tenor, _, _)| *tenor).collect();
+    let keys: Vec<InstrumentKey> = base.nodes.iter().map(|(key, _, _)| *key).collect();
     let mut ordered = Vec::with_capacity(n);
     let mut pillar_quotes = Vec::with_capacity(n);
-    for tenor in &tenors {
+    for key in &keys {
         let k = spec
             .pillars
             .iter()
-            .position(|p| p.tenor == *tenor)
+            .position(|p| p.key == *key)
             .ok_or_else(|| {
                 CurveBuildError::Spec(format!(
-                    "bootstrap returned a node at {tenor} that is not a pillar"
+                    "bootstrap returned a node for {key} that is not a pillar"
                 ))
             })?;
         ordered.push(instruments[k]);
@@ -137,11 +137,7 @@ pub fn build_curve(
         bucket_up: bucket(shift)?,
         bucket_down: bucket(-shift)?,
         base: curve,
-        jacobian: CurveJacobian {
-            tenors,
-            matrix,
-            bump,
-        },
+        jacobian: CurveJacobian { keys, matrix, bump },
         pillar_quotes,
         zero_bump: shift,
     })
@@ -151,12 +147,7 @@ fn bumped(instruments: &[BootstrapInstrument], j: usize, shift: f64) -> Vec<Boot
     instruments
         .iter()
         .enumerate()
-        .map(|(k, inst)| match *inst {
-            BootstrapInstrument::Ois { tenor, rate } if k == j => {
-                BootstrapInstrument::ois(tenor, rate + shift)
-            }
-            other => other,
-        })
+        .map(|(k, inst)| if k == j { inst.bumped(shift) } else { *inst })
         .collect()
 }
 
@@ -184,9 +175,9 @@ impl BuiltCurve {
         &self.pillar_quotes
     }
 
-    /// Tenor of each node and each ladder bucket, in node order.
-    pub fn tenors(&self) -> &[Tenor] {
-        &self.jacobian.tenors
+    /// Instrument behind each node and each ladder bucket, in node order.
+    pub fn keys(&self) -> &[InstrumentKey] {
+        &self.jacobian.keys
     }
 
     /// `matrix[i][j]` = d(zero rate of node i) / d(par quote j).
@@ -308,7 +299,7 @@ mod tests {
     use super::*;
     use fq_rates::bond::FixedRateBond;
     use fq_rates::curve::{bootstrap_sofr_with_jacobian, zero_bucket_ladder};
-    use fq_rates::swap::{OisSwap, SwapError, SwapSide};
+    use fq_rates::swap::{OisSwap, SwapError, SwapSide, Tenor};
     use riskrt_core::Tick;
 
     fn built() -> (BuiltCurve, OvernightIndex) {
@@ -403,7 +394,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(curve.tenors()[0].to_string(), "1M");
+        assert_eq!(curve.keys()[0].to_string(), "OIS 1M");
         assert_eq!(curve.pillar_quotes()[0], QuoteId(9)); // 1M was listed last
         assert_eq!(curve.pillar_quotes()[9], QuoteId(0)); // 30Y was listed first
         assert_eq!(curve.curve(), built().0.curve());
@@ -459,7 +450,7 @@ mod tests {
             assert!(
                 (par[j] - direct).abs() < 0.01,
                 "{}: {} vs {direct}",
-                curve.tenors()[j],
+                curve.keys()[j],
                 par[j]
             );
         }

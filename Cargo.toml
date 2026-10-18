@@ -21,6 +21,7 @@ riskrt-core = { path = "crates/riskrt-core" }
 riskrt-feed = { path = "crates/riskrt-feed" }
 riskrt-market = { path = "crates/riskrt-market" }
 riskrt-curves = { path = "crates/riskrt-curves" }
+riskrt-pricing = { path = "crates/riskrt-pricing" }
 
 # Pricing kernel: ferrumquant checked out next to this repo.
 fq-core  = { path = "../ferrumquant/crates/fq-core" }

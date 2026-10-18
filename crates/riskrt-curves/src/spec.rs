@@ -2,19 +2,45 @@
 
 use crate::error::CurveBuildError;
 use fq_core::time::Date;
+use fq_rates::curve::{BootstrapInstrument, InstrumentKey};
 use fq_rates::swap::Tenor;
 use riskrt_core::{CurveId, Day, QuoteId};
 
-/// One curve input: the quote that carries the par rate for a tenor.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// One curve input: the quote that carries one bootstrap instrument's value.
+///
+/// `key` says what the quote is (deposit, SOFR future, OIS) and at which
+/// tenor or contract; the quote's value is the rate, or the futures price.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pillar {
     pub quote: QuoteId,
-    pub tenor: Tenor,
+    pub key: InstrumentKey,
+    /// Futures convexity adjustment in rate units; ignored for other kinds.
+    pub convexity: f64,
 }
 
-/// One curve and its pillars. All pillars are USD SOFR OIS par rates for now,
-/// matching `fq_rates::curve::BootstrapInstrument`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+impl Pillar {
+    pub const fn ois(quote: QuoteId, tenor: Tenor) -> Self {
+        Self {
+            quote,
+            key: InstrumentKey::Ois(tenor),
+            convexity: 0.0,
+        }
+    }
+
+    /// The bootstrap instrument this pillar becomes once its quote is `value`.
+    pub fn instrument(&self, value: f64) -> BootstrapInstrument {
+        match self.key {
+            InstrumentKey::Deposit(p) => BootstrapInstrument::deposit(p, value),
+            InstrumentKey::SofrFuture(m) => {
+                BootstrapInstrument::sofr_future(m, value, self.convexity)
+            }
+            InstrumentKey::Ois(t) => BootstrapInstrument::ois(t, value),
+        }
+    }
+}
+
+/// One curve and its pillars, in any order; the bootstrap sorts them.
+#[derive(Clone, Debug, PartialEq)]
 pub struct CurveSpec {
     pub id: CurveId,
     pub name: String,
@@ -22,7 +48,7 @@ pub struct CurveSpec {
 }
 
 impl CurveSpec {
-    /// Convenience for tests and config loaders: `("5Y", QuoteId)` pairs.
+    /// An OIS-only curve from `("5Y", QuoteId)` pairs.
     pub fn sofr_ois(
         id: CurveId,
         name: &str,
@@ -34,10 +60,7 @@ impl CurveSpec {
                 let tenor = tenor
                     .parse::<Tenor>()
                     .map_err(|e| CurveBuildError::Spec(format!("curve '{name}': {e}")))?;
-                Ok(Pillar {
-                    quote: *quote,
-                    tenor,
-                })
+                Ok(Pillar::ois(*quote, tenor))
             })
             .collect::<Result<Vec<_>, CurveBuildError>>()?;
         Ok(Self {
@@ -83,10 +106,10 @@ impl CurveSetSpec {
                 return bad(format!("curve '{}' has no pillars", curve.name));
             }
             for (k, pillar) in curve.pillars.iter().enumerate() {
-                if curve.pillars[..k].iter().any(|p| p.tenor == pillar.tenor) {
+                if curve.pillars[..k].iter().any(|p| p.key == pillar.key) {
                     return bad(format!(
-                        "curve '{}' has two pillars at {}",
-                        curve.name, pillar.tenor
+                        "curve '{}' has two pillars for {}",
+                        curve.name, pillar.key
                     ));
                 }
                 let slot = &mut owner[pillar.quote.index()];
@@ -179,7 +202,7 @@ mod tests {
 
     #[test]
     fn bad_tenor_and_bad_date_are_rejected() {
-        let bad = CurveSpec::sofr_ois(CurveId(0), "X", &[("1W", QuoteId(0))]);
+        let bad = CurveSpec::sofr_ois(CurveId(0), "X", &[("1Q", QuoteId(0))]);
         assert!(matches!(bad, Err(CurveBuildError::Spec(_))));
         let ancient = CurveSetSpec::new(Day(-100_000), vec![curve(0, &[("1Y", 0)])]);
         assert!(matches!(ancient, Err(CurveBuildError::Date(_))));
