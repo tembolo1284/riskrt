@@ -1,0 +1,9 @@
+[package]
+name = "riskrt-deps"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+riskrt-core.workspace = true

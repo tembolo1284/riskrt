@@ -1,0 +1,17 @@
+[package]
+name = "riskrt-curves"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+riskrt-core.workspace = true
+riskrt-market.workspace = true
+fq-core.workspace = true
+fq-rates.workspace = true
+arc-swap.workspace = true
+rayon.workspace = true
+
+[dev-dependencies]
+riskrt-feed.workspace = true
