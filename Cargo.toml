@@ -1,0 +1,39 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/riskrt-core",
+    "crates/riskrt-feed",
+    "crates/riskrt-market",
+    "crates/riskrt-curves",
+    "crates/riskrt-deps",
+    "crates/riskrt-pricing",
+    # append as they land: sched, agg, scenario, engine, cli
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+
+[workspace.dependencies]
+riskrt-core = { path = "crates/riskrt-core" }
+riskrt-feed = { path = "crates/riskrt-feed" }
+riskrt-market = { path = "crates/riskrt-market" }
+riskrt-curves = { path = "crates/riskrt-curves" }
+
+# Pricing kernel: ferrumquant checked out next to this repo.
+fq-core  = { path = "../ferrumquant/crates/fq-core" }
+fq-rates = { path = "../ferrumquant/crates/fq-rates" }
+
+arc-swap  = "1"
+crossbeam = "0.8"
+rayon     = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+debug = "line-tables-only"   # usable perf/flamegraph output
+
+[profile.bench]
+inherits = "release"
