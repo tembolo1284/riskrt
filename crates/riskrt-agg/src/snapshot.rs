@@ -1,7 +1,7 @@
 //! One immutable, versioned view of portfolio risk.
 
 use riskrt_core::{BookId, CurveId, Ladder, MarketVersion, PricedTrade, Risk, TradeId};
-use riskrt_curves::Versioned;
+use riskrt_curves::{CurveSet, Versioned};
 use std::sync::Arc;
 
 /// Portfolio risk as of one batch.
@@ -134,6 +134,19 @@ impl RiskSnapshot {
             .iter()
             .flatten()
             .filter(|p| p.risk.version < since)
+            .count()
+    }
+
+    /// Trades whose curve has been rebuilt in `set` since they were last
+    /// priced: the exact number still to catch up, unlike `older_than`.
+    pub fn stale_against(&self, set: &CurveSet) -> usize {
+        self.trades
+            .iter()
+            .flatten()
+            .filter(|p| {
+                set.changed_since(p.risk.version)
+                    .any(|c| c == p.ladder.curve)
+            })
             .count()
     }
 

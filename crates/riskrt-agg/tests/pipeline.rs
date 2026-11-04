@@ -180,6 +180,11 @@ fn final_snapshot_equals_a_single_threaded_sum_over_the_final_curve_set() {
     let final_set = sets.load();
     let last = snapshots.load();
     assert!(last.is_complete());
+    assert_eq!(
+        last.stale_against(&final_set),
+        0,
+        "nothing left to catch up"
+    );
     let mut total = Risk::ZERO;
     let mut by_book = vec![Risk::ZERO; BOOKS as usize];
     let mut by_curve = vec![Risk::ZERO; CURVES as usize];

@@ -1,0 +1,19 @@
+[package]
+name = "riskrt-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+riskrt-core.workspace = true
+riskrt-feed.workspace = true
+riskrt-market.workspace = true
+riskrt-curves.workspace = true
+riskrt-deps.workspace = true
+riskrt-pricing.workspace = true
+riskrt-sched.workspace = true
+riskrt-agg.workspace = true
+fq-core.workspace = true
+fq-rates.workspace = true
+rayon.workspace = true

@@ -1,0 +1,16 @@
+[package]
+name = "riskrt-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "riskrt"
+path = "src/main.rs"
+
+[dependencies]
+riskrt-core.workspace = true
+riskrt-feed.workspace = true
+riskrt-engine.workspace = true
+clap.workspace = true

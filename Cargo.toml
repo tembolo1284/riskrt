@@ -9,7 +9,9 @@ members = [
     "crates/riskrt-pricing",
     "crates/riskrt-sched",
     "crates/riskrt-agg",
-    # append as they land: scenario, engine, cli
+    "crates/riskrt-engine",
+    "crates/riskrt-cli",
+    # append as they land: scenario
 ]
 
 [workspace.package]
@@ -26,6 +28,8 @@ riskrt-curves = { path = "crates/riskrt-curves" }
 riskrt-deps = { path = "crates/riskrt-deps" }
 riskrt-pricing = { path = "crates/riskrt-pricing" }
 riskrt-sched = { path = "crates/riskrt-sched" }
+riskrt-agg = { path = "crates/riskrt-agg" }
+riskrt-engine = { path = "crates/riskrt-engine" }
 
 # Pricing kernel: ferrumquant checked out next to this repo.
 fq-core  = { path = "../ferrumquant/crates/fq-core" }
@@ -34,6 +38,7 @@ fq-rates = { path = "../ferrumquant/crates/fq-rates" }
 arc-swap  = "1"
 crossbeam = "0.8"
 rayon     = "1"
+clap      = { version = "4", features = ["derive"] }
 
 [profile.release]
 lto = "thin"
