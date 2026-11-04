@@ -143,6 +143,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "riskrt-agg"
+version = "0.1.0"
+dependencies = [
+ "crossbeam",
+ "fq-core",
+ "fq-rates",
+ "riskrt-core",
+ "riskrt-curves",
+ "riskrt-deps",
+ "riskrt-feed",
+ "riskrt-market",
+ "riskrt-pricing",
+ "riskrt-sched",
+]
+
+[[package]]
 name = "riskrt-core"
 version = "0.1.0"
 
@@ -193,6 +209,22 @@ dependencies = [
  "riskrt-core",
  "riskrt-curves",
  "riskrt-market",
+]
+
+[[package]]
+name = "riskrt-sched"
+version = "0.1.0"
+dependencies = [
+ "crossbeam",
+ "fq-core",
+ "fq-rates",
+ "rayon",
+ "riskrt-core",
+ "riskrt-curves",
+ "riskrt-deps",
+ "riskrt-feed",
+ "riskrt-market",
+ "riskrt-pricing",
 ]
 
 [[package]]

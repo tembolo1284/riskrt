@@ -7,7 +7,9 @@ members = [
     "crates/riskrt-curves",
     "crates/riskrt-deps",
     "crates/riskrt-pricing",
-    # append as they land: sched, agg, scenario, engine, cli
+    "crates/riskrt-sched",
+    "crates/riskrt-agg",
+    # append as they land: scenario, engine, cli
 ]
 
 [workspace.package]
@@ -21,7 +23,9 @@ riskrt-core = { path = "crates/riskrt-core" }
 riskrt-feed = { path = "crates/riskrt-feed" }
 riskrt-market = { path = "crates/riskrt-market" }
 riskrt-curves = { path = "crates/riskrt-curves" }
+riskrt-deps = { path = "crates/riskrt-deps" }
 riskrt-pricing = { path = "crates/riskrt-pricing" }
+riskrt-sched = { path = "crates/riskrt-sched" }
 
 # Pricing kernel: ferrumquant checked out next to this repo.
 fq-core  = { path = "../ferrumquant/crates/fq-core" }
