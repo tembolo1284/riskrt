@@ -1,0 +1,162 @@
+syntax = "proto3";
+
+package riskrt.v1;
+
+// One running riskrt engine, seen from outside the process.
+//
+// Ids on the wire are the engine's dense ids: a trade_id indexes the
+// portfolio, a curve_id indexes the curve set, a book_id the book table.
+// Names are resolved once through Describe. All risk is per basis point.
+//
+// Streams follow the engine's own publication model: each update is the
+// latest complete version, never a backlog. A slow client skips versions
+// and the version numbers tell it so.
+service Risk {
+  // Static reference data: curves, pillars, counts, valuation date.
+  rpc Describe(DescribeRequest) returns (Description);
+
+  // The whole portfolio, one position per message. Immutable per session.
+  rpc Positions(PositionsRequest) returns (stream Position);
+
+  // Live risk. First message is the current snapshot, then one per new
+  // version (rate-limited by min_interval_ms if set).
+  rpc SubscribeRisk(RiskSubscription) returns (stream RiskUpdate);
+
+  // Live quotes. First message carries every populated quote, later ones
+  // only the quotes that changed since the client's last version.
+  rpc SubscribeQuotes(QuoteSubscription) returns (stream QuoteUpdate);
+
+  // Reprice one trade now against the current curve set, outside the
+  // pipeline. For ad-hoc checks; the stream is the source of truth.
+  rpc Price(PriceRequest) returns (PricedTrade);
+}
+
+message DescribeRequest {}
+
+message Description {
+  // Days since 1970-01-01.
+  int32 valuation_day = 1;
+  uint32 trade_count = 2;
+  uint32 book_count = 3;
+  repeated CurveInfo curves = 4;
+}
+
+message CurveInfo {
+  uint32 curve_id = 1;
+  string name = 2;
+  // In the curve's node order, which is also the ladder's bucket order.
+  repeated PillarInfo pillars = 3;
+}
+
+message PillarInfo {
+  uint32 quote_id = 1;
+  // e.g. "OIS 5Y", "DEPO 1M", "SR3 Z6"
+  string label = 2;
+}
+
+message PositionsRequest {}
+
+enum PayRec {
+  PAY_REC_UNSPECIFIED = 0;
+  PAY = 1;
+  RECEIVE = 2;
+}
+
+message Swap {
+  int32 start_day = 1;
+  int32 maturity_day = 2;
+  double fixed_rate = 3;
+  PayRec fixed_leg = 4;
+}
+
+message Bond {
+  int32 maturity_day = 1;
+  double coupon = 2;
+}
+
+message Position {
+  uint32 trade_id = 1;
+  uint32 book_id = 2;
+  uint32 discount_curve = 3;
+  // Absent for bonds.
+  optional uint32 forward_curve = 4;
+  double notional = 5;
+  oneof product {
+    Swap swap = 6;
+    Bond bond = 7;
+  }
+}
+
+message RiskSubscription {
+  // Include the per-trade table in every update. Off by default: a 2,000
+  // trade table with ladders is ~200 KB per version.
+  bool include_trades = 1;
+  // Minimum spacing between updates. 0 sends every version the client can
+  // keep up with.
+  uint32 min_interval_ms = 2;
+}
+
+message RiskNumbers {
+  double pv = 1;
+  double dv01 = 2;
+}
+
+message Ladder {
+  uint32 curve_id = 1;
+  // Bucket order matches CurveInfo.pillars for this curve.
+  repeated double per_bp = 2;
+}
+
+message TradeRisk {
+  uint32 trade_id = 1;
+  // Curve set version this trade was last priced against.
+  uint64 version = 2;
+  RiskNumbers risk = 3;
+  Ladder ladder = 4;
+}
+
+message RiskUpdate {
+  // Curve set version of the batch that produced this snapshot.
+  uint64 version = 1;
+  // Current curve set and quote versions, for the "behind" display.
+  uint64 curves_version = 2;
+  uint64 quotes_version = 3;
+  RiskNumbers total = 4;
+  // Indexed by book_id.
+  repeated RiskNumbers by_book = 5;
+  // Indexed by curve_id.
+  repeated RiskNumbers by_curve = 6;
+  // One per curve that has priced something.
+  repeated Ladder ladders = 7;
+  uint32 trade_count = 8;
+  uint32 priced_count = 9;
+  // Trades whose curve has moved since they were last priced.
+  uint32 stale_count = 10;
+  // Only when RiskSubscription.include_trades.
+  repeated TradeRisk trades = 11;
+}
+
+message QuoteSubscription {
+  uint32 min_interval_ms = 1;
+}
+
+message Quote {
+  uint32 quote_id = 1;
+  uint64 seq = 2;
+  uint64 ts_ns = 3;
+  double value = 4;
+}
+
+message QuoteUpdate {
+  uint64 version = 1;
+  // Changed since the previous update on this stream (all of them on the first).
+  repeated Quote quotes = 2;
+}
+
+message PriceRequest {
+  uint32 trade_id = 1;
+}
+
+message PricedTrade {
+  TradeRisk trade = 1;
+}

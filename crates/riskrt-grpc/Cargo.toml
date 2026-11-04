@@ -1,0 +1,22 @@
+[package]
+name = "riskrt-grpc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "gRPC server exposing a running riskrt engine"
+
+[dependencies]
+riskrt-core.workspace = true
+riskrt-market.workspace = true
+riskrt-curves.workspace = true
+riskrt-agg.workspace = true
+riskrt-pricing.workspace = true
+riskrt-engine.workspace = true
+riskrt-proto.workspace = true
+tonic.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+
+[dev-dependencies]
+riskrt-feed.workspace = true

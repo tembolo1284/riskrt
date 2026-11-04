@@ -11,6 +11,8 @@ members = [
     "crates/riskrt-agg",
     "crates/riskrt-engine",
     "crates/riskrt-cli",
+    "crates/riskrt-proto",
+    "crates/riskrt-grpc",
     # append as they land: scenario
 ]
 
@@ -30,6 +32,8 @@ riskrt-pricing = { path = "crates/riskrt-pricing" }
 riskrt-sched = { path = "crates/riskrt-sched" }
 riskrt-agg = { path = "crates/riskrt-agg" }
 riskrt-engine = { path = "crates/riskrt-engine" }
+riskrt-proto  = { path = "crates/riskrt-proto" }
+riskrt-grpc   = { path = "crates/riskrt-grpc" }
 
 # Pricing kernel: ferrumquant checked out next to this repo.
 fq-core  = { path = "../ferrumquant/crates/fq-core" }
@@ -39,6 +43,15 @@ arc-swap  = "1"
 crossbeam = "0.8"
 rayon     = "1"
 clap      = { version = "4", features = ["derive"] }
+
+# gRPC surface (riskrt-proto, riskrt-grpc only).
+prost             = "0.14"
+tonic             = "0.14"
+tonic-prost       = "0.14"
+tonic-prost-build = "0.14"
+protox            = "0.10"
+tokio             = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+tokio-stream      = { version = "0.1", features = ["net"] }
 
 [profile.release]
 lto = "thin"

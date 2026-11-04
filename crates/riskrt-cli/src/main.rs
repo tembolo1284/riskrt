@@ -4,6 +4,9 @@ use clap::Parser;
 use riskrt_core::{BookId, CurveId, Tick};
 use riskrt_engine::{Engine, EngineConfig, EngineStats, demo};
 use riskrt_feed::TickSource;
+use riskrt_grpc::{Handles, spawn_server};
+use std::net::SocketAddr;
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -43,6 +46,9 @@ struct Args {
     /// Seed for the portfolio and the feeds.
     #[arg(long, default_value_t = 42)]
     seed: u64,
+    /// Serve live risk over gRPC on this address (e.g. 127.0.0.1:50051).
+    #[arg(long)]
+    grpc: Option<SocketAddr>,
 }
 
 /// Slows a source down to a fixed tick rate.
@@ -69,8 +75,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let portfolio = demo::portfolio(args.trades, args.curves, args.books, args.seed);
     let curves = demo::curve_specs(args.curves)?;
-    let config =
-        EngineConfig::new(portfolio, curves).with_workers(args.workers, args.curve_workers);
+    let config = EngineConfig::new(portfolio.clone(), curves.clone())
+        .with_workers(args.workers, args.curve_workers);
 
     let interval = 1_000_000_000u64
         .checked_div(args.rate)
@@ -92,6 +98,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let engine = Engine::start(config, feeds)?;
     let snapshots = engine.snapshots();
     let curve_sets = engine.curves();
+    let server = match args.grpc {
+        Some(addr) => {
+            let handles = Handles {
+                portfolio: Arc::new(portfolio),
+                spec: Arc::new(curves),
+                snapshots: engine.snapshots(),
+                curves: engine.curves(),
+                quotes: engine.quotes(),
+                pricer: engine.pricer(),
+            };
+            let server = spawn_server(handles, addr)?;
+            println!("gRPC: serving riskrt.v1.Risk on {}", server.local_addr());
+            Some(server)
+        }
+        None => None,
+    };
     let started = Instant::now();
     let deadline = (args.seconds > 0).then(|| started + Duration::from_secs(args.seconds));
 
@@ -148,6 +170,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let stats = engine.shutdown();
+    if let Some(server) = server {
+        server.join().map_err(|e| e.to_string())?;
+    }
     print_stats(&stats);
     Ok(())
 }

@@ -13,4 +13,5 @@ path = "src/main.rs"
 riskrt-core.workspace = true
 riskrt-feed.workspace = true
 riskrt-engine.workspace = true
+riskrt-grpc.workspace = true
 clap.workspace = true
