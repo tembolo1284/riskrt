@@ -5,19 +5,25 @@
 
 use crate::v1;
 use riskrt_core::{
-    BookId, CurveId, Day, Ladder, PayRec, Position, PricedTrade, Product, Risk, TradeId,
-    TradeRisk, MarketVersion,
+    BookId, CurveId, Day, Ladder, MarketVersion, PayRec, Position, PricedTrade, Product, Risk,
+    TradeId, TradeRisk,
 };
 
 impl From<Risk> for v1::RiskNumbers {
     fn from(r: Risk) -> Self {
-        Self { pv: r.pv, dv01: r.dv01 }
+        Self {
+            pv: r.pv,
+            dv01: r.dv01,
+        }
     }
 }
 
 impl From<v1::RiskNumbers> for Risk {
     fn from(r: v1::RiskNumbers) -> Self {
-        Self { pv: r.pv, dv01: r.dv01 }
+        Self {
+            pv: r.pv,
+            dv01: r.dv01,
+        }
     }
 }
 
@@ -58,7 +64,10 @@ impl From<v1::TradeRisk> for PricedTrade {
                 MarketVersion(t.version),
                 t.risk.map(Risk::from).unwrap_or(Risk::ZERO),
             ),
-            ladder: t.ladder.map(Ladder::from).unwrap_or_else(|| Ladder::zero(CurveId(0), 0)),
+            ladder: t
+                .ladder
+                .map(Ladder::from)
+                .unwrap_or_else(|| Ladder::zero(CurveId(0), 0)),
         }
     }
 }
@@ -75,14 +84,17 @@ impl From<PayRec> for v1::PayRec {
 /// Builds the wire position for trade `id`.
 pub fn position_to_wire(id: TradeId, p: &Position) -> v1::Position {
     let product = match p.product {
-        Product::Swap { start, maturity, fixed_rate, fixed_leg } => {
-            v1::position::Product::Swap(v1::Swap {
-                start_day: start.0,
-                maturity_day: maturity.0,
-                fixed_rate,
-                fixed_leg: v1::PayRec::from(fixed_leg) as i32,
-            })
-        }
+        Product::Swap {
+            start,
+            maturity,
+            fixed_rate,
+            fixed_leg,
+        } => v1::position::Product::Swap(v1::Swap {
+            start_day: start.0,
+            maturity_day: maturity.0,
+            fixed_rate,
+            fixed_leg: v1::PayRec::from(fixed_leg) as i32,
+        }),
         Product::Bond { maturity, coupon } => v1::position::Product::Bond(v1::Bond {
             maturity_day: maturity.0,
             coupon,
@@ -137,7 +149,10 @@ mod tests {
             risk: TradeRisk::new(
                 TradeId(7),
                 MarketVersion(42),
-                Risk { pv: 1234.5, dv01: -8.25 },
+                Risk {
+                    pv: 1234.5,
+                    dv01: -8.25,
+                },
             ),
             ladder: Ladder {
                 curve: CurveId(2),
@@ -167,7 +182,10 @@ mod tests {
             discount: CurveId(2),
             forward: None,
             notional: -5e6,
-            product: Product::Bond { maturity: Day(23_000), coupon: 0.03 },
+            product: Product::Bond {
+                maturity: Day(23_000),
+                coupon: 0.03,
+            },
         };
         for (id, p) in [(TradeId(0), swap), (TradeId(9), bond)] {
             let back = position_from_wire(position_to_wire(id, &p)).unwrap();

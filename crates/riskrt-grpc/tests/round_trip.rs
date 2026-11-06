@@ -123,7 +123,9 @@ fn describe_positions_streams_and_price_agree_with_the_engine() {
         assert!(priced.risk.unwrap().pv.is_finite());
         assert!(
             client
-                .price(v1::PriceRequest { trade_id: trades + 5 })
+                .price(v1::PriceRequest {
+                    trade_id: trades + 5
+                })
                 .await
                 .is_err()
         );

@@ -21,7 +21,12 @@ pub enum PayRec {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Product {
     /// Vanilla fixed-float interest rate swap.
-    Swap { start: Day, maturity: Day, fixed_rate: f64, fixed_leg: PayRec },
+    Swap {
+        start: Day,
+        maturity: Day,
+        fixed_rate: f64,
+        fixed_leg: PayRec,
+    },
     /// Fixed-coupon bullet bond.
     Bond { maturity: Day, coupon: f64 },
 }
@@ -60,7 +65,12 @@ impl Position {
             return Err("notional must be finite and non-zero");
         }
         match self.product {
-            Product::Swap { start, maturity, fixed_rate, .. } => {
+            Product::Swap {
+                start,
+                maturity,
+                fixed_rate,
+                ..
+            } => {
                 if maturity <= start {
                     return Err("swap maturity must be after start");
                 }

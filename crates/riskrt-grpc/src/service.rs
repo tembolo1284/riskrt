@@ -186,10 +186,21 @@ impl riskrt_proto::Risk for RiskService {
     ) -> Result<Response<v1::PricedTrade>, Status> {
         let trade = TradeId(req.into_inner().trade_id);
         if trade.index() >= self.h.pricer.trade_count() {
-            return Err(Status::not_found(format!("{trade} is not in the portfolio")));
+            return Err(Status::not_found(format!(
+                "{trade} is not in the portfolio"
+            )));
         }
         let set = self.h.curves.load();
-        if set.curve(self.h.portfolio.get(trade).map_err(|e| Status::internal(e.to_string()))?.discount).is_none() {
+        if set
+            .curve(
+                self.h
+                    .portfolio
+                    .get(trade)
+                    .map_err(|e| Status::internal(e.to_string()))?
+                    .discount,
+            )
+            .is_none()
+        {
             return Err(Status::unavailable("curve not built yet"));
         }
         let pricer = Arc::clone(&self.h.pricer);

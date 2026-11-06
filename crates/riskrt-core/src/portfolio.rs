@@ -33,7 +33,9 @@ impl Portfolio {
     }
 
     pub fn get(&self, id: TradeId) -> Result<&Position> {
-        self.positions.get(id.index()).ok_or(Error::UnknownTrade(id))
+        self.positions
+            .get(id.index())
+            .ok_or(Error::UnknownTrade(id))
     }
 
     /// Dense slice; a `TradeId` indexes straight into it.
@@ -100,7 +102,10 @@ mod tests {
             discount: CurveId(curve),
             forward: None,
             notional: 5_000_000.0,
-            product: Product::Bond { maturity: Day(23_000), coupon: 0.0375 },
+            product: Product::Bond {
+                maturity: Day(23_000),
+                coupon: 0.0375,
+            },
         }
     }
 
@@ -130,7 +135,10 @@ mod tests {
         bad.notional = f64::NAN;
         assert!(matches!(
             b.add(bad),
-            Err(Error::InvalidPosition { trade: TradeId(0), .. })
+            Err(Error::InvalidPosition {
+                trade: TradeId(0),
+                ..
+            })
         ));
         assert!(b.build().is_empty());
     }

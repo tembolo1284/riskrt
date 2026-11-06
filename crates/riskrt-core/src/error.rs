@@ -7,7 +7,10 @@ pub enum Error {
     /// A `TradeId` that is not in the portfolio.
     UnknownTrade(TradeId),
     /// A position failed validation when added.
-    InvalidPosition { trade: TradeId, reason: &'static str },
+    InvalidPosition {
+        trade: TradeId,
+        reason: &'static str,
+    },
     /// More than `u32::MAX` trades.
     CapacityExceeded,
 }

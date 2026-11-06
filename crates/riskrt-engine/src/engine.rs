@@ -35,7 +35,11 @@ impl EngineStats {
     }
 }
 
-/// A running pipeline. Drop or `wait` it to shut down.
+/// A running pipeline.
+///
+/// `wait` joins it and returns statistics. Dropping it without waiting stops
+/// the feeds, and every stage then drains and exits on its own; the threads
+/// are detached, not abandoned mid-work.
 pub struct Engine {
     started: Instant,
     stop: Arc<AtomicBool>,
@@ -44,6 +48,11 @@ pub struct Engine {
     curves: Subscriber<CurveSet>,
     snapshots: Subscriber<RiskSnapshot>,
     pricer: Arc<dyn Pricer>,
+    /// `None` once `wait` has taken them.
+    threads: Option<Threads>,
+}
+
+struct Threads {
     feeds: Vec<JoinHandle<FeedStats>>,
     conflator: JoinHandle<ConflateStats>,
     curve_builder: JoinHandle<BuildStats>,
@@ -54,9 +63,26 @@ pub struct Engine {
 impl Engine {
     /// Spawns every stage. Each feed gets its own thread; its quotes must all
     /// belong to curves in `config.curves`, which is checked up front.
+    ///
+    /// If anything fails part way through, whatever was already started is
+    /// stopped before the error is returned: stages exit as their inputs are
+    /// dropped, and any feeds already running see the stop flag.
     pub fn start(
         config: EngineConfig,
         feeds: Vec<Box<dyn TickSource>>,
+    ) -> Result<Self, EngineError> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let result = Self::start_with(config, feeds, Arc::clone(&stop));
+        if result.is_err() {
+            stop.store(true, Ordering::Relaxed);
+        }
+        result
+    }
+
+    fn start_with(
+        config: EngineConfig,
+        feeds: Vec<Box<dyn TickSource>>,
+        stop: Arc<AtomicBool>,
     ) -> Result<Self, EngineError> {
         let started = Instant::now();
         let curve_count = config.curves.curve_count();
@@ -105,7 +131,6 @@ impl Engine {
             config.conflate_max_drain,
             writer.into_sink(),
         )?;
-        let stop = Arc::new(AtomicBool::new(false));
         let mut handles = Vec::with_capacity(feeds.len());
         for (i, source) in feeds.into_iter().enumerate() {
             handles.push(spawn_feed(
@@ -125,11 +150,13 @@ impl Engine {
             curves,
             snapshots,
             pricer,
-            feeds: handles,
-            conflator,
-            curve_builder,
-            scheduler,
-            aggregator,
+            threads: Some(Threads {
+                feeds: handles,
+                conflator,
+                curve_builder,
+                scheduler,
+                aggregator,
+            }),
         })
     }
 
@@ -165,16 +192,17 @@ impl Engine {
 
     /// Joins every stage in pipeline order and returns their statistics.
     /// Call `stop` first unless the feeds end on their own.
-    pub fn wait(self) -> EngineStats {
+    pub fn wait(mut self) -> EngineStats {
         fn join<T>(name: &str, h: JoinHandle<T>) -> T {
             h.join()
                 .unwrap_or_else(|_| panic!("{name} thread panicked"))
         }
-        let feeds = self.feeds.into_iter().map(|h| join("feed", h)).collect();
-        let conflate = join("conflator", self.conflator);
-        let curves = join("curve-builder", self.curve_builder);
-        let sched = join("scheduler", self.scheduler);
-        let agg = join("aggregator", self.aggregator);
+        let threads = self.threads.take().expect("threads are only taken once");
+        let feeds = threads.feeds.into_iter().map(|h| join("feed", h)).collect();
+        let conflate = join("conflator", threads.conflator);
+        let curves = join("curve-builder", threads.curve_builder);
+        let sched = join("scheduler", threads.scheduler);
+        let agg = join("aggregator", threads.aggregator);
         EngineStats {
             feeds,
             conflate,
@@ -189,5 +217,13 @@ impl Engine {
     pub fn shutdown(self) -> EngineStats {
         self.stop();
         self.wait()
+    }
+}
+
+impl Drop for Engine {
+    /// Stops the feeds. Threads not yet joined are detached and finish on
+    /// their own as the pipeline drains; `wait` is the way to collect them.
+    fn drop(&mut self) {
+        self.stop();
     }
 }

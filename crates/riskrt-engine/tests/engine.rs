@@ -75,3 +75,25 @@ fn portfolio_on_an_unspecified_curve_is_rejected_at_start() {
         Err(riskrt_engine::EngineError::Config(_))
     ));
 }
+
+#[test]
+fn dropping_the_engine_stops_endless_feeds() {
+    let curves = 2;
+    let portfolio = demo::portfolio(20, curves, 2, 4);
+    let config =
+        EngineConfig::new(portfolio, demo::curve_specs(curves).unwrap()).with_workers(1, 1);
+    let engine = Engine::start(config, demo::sim_feeds(curves, 9, None)).unwrap();
+    let snapshots = engine.snapshots();
+    let quotes = engine.quotes();
+    drop(engine);
+
+    // Every stage drains and closes its output once the feeds stop.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !(quotes.is_closed() && snapshots.is_closed()) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "pipeline did not shut down after drop"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}

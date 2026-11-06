@@ -7,6 +7,7 @@ use riskrt_feed::TickSource;
 use riskrt_grpc::{Handles, spawn_server};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -95,6 +96,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect();
 
+    // Ctrl-C asks the engine to stop; the loop below then shuts down in
+    // order and prints the statistics instead of dying mid-batch.
+    let interrupted = Arc::new(AtomicBool::new(false));
+    {
+        let interrupted = Arc::clone(&interrupted);
+        ctrlc::set_handler(move || interrupted.store(true, Ordering::Relaxed))?;
+    }
+
     let engine = Engine::start(config, feeds)?;
     let snapshots = engine.snapshots();
     let curve_sets = engine.curves();
@@ -164,6 +173,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         let _ = BookId(0);
+        if interrupted.load(Ordering::Relaxed) {
+            println!("\ninterrupted, shutting down");
+            break;
+        }
         if snapshots.is_closed() || deadline.is_some_and(|d| Instant::now() >= d) {
             break;
         }

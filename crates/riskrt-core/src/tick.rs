@@ -24,7 +24,12 @@ const _: () = assert!(size_of::<Tick>() == 32);
 impl Tick {
     #[inline]
     pub const fn new(quote: QuoteId, seq: u64, ts_ns: u64, value: f64) -> Self {
-        Self { seq, ts_ns, value, quote }
+        Self {
+            seq,
+            ts_ns,
+            value,
+            quote,
+        }
     }
 
     /// Conflation rule: a tick replaces an older one for the same quote.
