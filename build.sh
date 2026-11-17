@@ -7,6 +7,9 @@
 #   ./build.sh check           the full gate: fmt, build, test, clippy -D warnings
 #   ./build.sh flake [N]       run the threaded crates' tests N times (default 5)
 #   ./build.sh run [args...]   run the CLI demo in release mode
+#   ./build.sh bench [name] [-- args]
+#                              criterion benches (curve_build, price_batch) and the
+#                              quote_to_risk latency table; no name runs all three
 #   ./build.sh fmt             format the workspace in place
 #   ./build.sh clean
 #
@@ -55,8 +58,17 @@ case "$cmd" in
     check) do_fmt_check; do_build; do_test; do_clippy; step "check passed" ;;
     flake) do_flake "${1:-5}" ;;
     run)   step "cargo run -p riskrt-cli --release -- $*"; cargo run -p riskrt-cli --release -- "$@" ;;
+    bench)
+        if [[ $# -gt 0 && $1 != -- ]]; then
+            name="$1"; shift
+            step "cargo bench -p riskrt-engine --bench $name $*"
+            cargo bench -q -p riskrt-engine --bench "$name" "$@"
+        else
+            step "cargo bench -p riskrt-engine (all) $*"
+            cargo bench -q -p riskrt-engine "$@"
+        fi ;;
     fmt)   do_fmt ;;
     clean) step "cargo clean"; cargo clean ;;
-    -h|--help|help) sed -n '2,13p' "$0" ;;
-    *) die "unknown command '$cmd' (try: build, test, check, flake, run, fmt, clean)" ;;
+    -h|--help|help) sed -n '2,16p' "$0" ;;
+    *) die "unknown command '$cmd' (try: build, test, check, flake, run, bench, fmt, clean)" ;;
 esac

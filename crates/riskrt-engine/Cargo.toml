@@ -17,3 +17,19 @@ riskrt-agg.workspace = true
 fq-core.workspace = true
 fq-rates.workspace = true
 rayon.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+crossbeam.workspace = true
+
+[[bench]]
+name = "curve_build"
+harness = false
+
+[[bench]]
+name = "price_batch"
+harness = false
+
+[[bench]]
+name = "quote_to_risk"
+harness = false

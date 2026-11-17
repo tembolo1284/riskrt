@@ -19,8 +19,9 @@ When something does fail, it is visible rather than silent. Every curve carries 
 7. [Threading model](#threading-model)
 8. [Correctness guarantees and how they are tested](#correctness-guarantees-and-how-they-are-tested)
 9. [Performance notes](#performance-notes)
-10. [Integration with ferrumquant](#integration-with-ferrumquant)
-11. [Known limitations and what comes next](#known-limitations-and-what-comes-next)
+10. [Benchmarks](#benchmarks)
+11. [Integration with ferrumquant](#integration-with-ferrumquant)
+12. [Known limitations and what comes next](#known-limitations-and-what-comes-next)
 ## Pipeline overview
  
 ```
@@ -68,6 +69,7 @@ riskrt/
     ├── riskrt-sched/    src/{lib,scheduler,worker}.rs                tests/pipeline.rs
     ├── riskrt-agg/      src/{lib,snapshot,aggregator}.rs             tests/pipeline.rs
     ├── riskrt-engine/   src/{lib,config,engine,demo,error}.rs        tests/engine.rs
+    │                    benches/{curve_build,price_batch,quote_to_risk}.rs
     ├── riskrt-proto/    proto/riskrt/v1/risk.proto  src/{lib,convert}.rs  build.rs
     ├── riskrt-grpc/     src/{lib,service,bridge}.rs                  tests/round_trip.rs
     └── riskrt-cli/      src/main.rs
@@ -93,6 +95,7 @@ git clone https://github.com/tembolo1284/ferrumquant ../ferrumquant
 | `./build.sh check` | the full gate: `fmt --check`, build, test, `clippy -D warnings` |
 | `./build.sh flake [N]` | run the threaded crates' tests N times (default 5), stop on the first failure |
 | `./build.sh run [args]` | run the CLI in release mode |
+| `./build.sh bench [name]` | the benchmarks below; no name runs all three |
 | `./build.sh fmt` | format in place |
  
 It refuses to start if ferrumquant is missing and says where to clone it. `FERRUMQUANT_DIR` overrides the location.
@@ -196,8 +199,7 @@ Both structures are checked against a brute-force scan of random portfolios, inc
 ### riskrt-sched
  
 The scheduler thread owns the `DirtySet`. On each new curve set it marks the trades on curves that changed since the last set it handled, drains them as one sorted batch, pins that set with an `Arc`, and prices the batch on a dedicated rayon pool. The output is a `PricedBatch` whose every result carries the batch's set version, sent down a small bounded channel.
-
-
+ 
 If curve sets arrive faster than batches finish, the scheduler skips to the latest one. `changed_since` across the skipped versions still marks every affected trade exactly once. A trade whose curve is not built yet is requeued rather than failed and goes out when the curve appears. Any other failure travels in the batch's `failed` list with its error, so a round where every trade fails still produces a batch and the failure is never silent. A failed trade is retried when its curve next moves.
  
 ### riskrt-agg
@@ -294,7 +296,7 @@ For a run with F feeds, W pricing workers and C curve workers, the engine has F 
 The two rayon pools are separate on purpose, so that curve builds (a few milliseconds each, bursty) do not compete with pricing workers for the same threads. `--curve-workers 0` folds curve builds onto rayon's global pool instead.
  
 Core pinning is not implemented yet. The right place for it is the pools' `start_handler`, and the decision waits on the benchmarks.
- 
+
 ## Correctness guarantees and how they are tested
  
 159 tests across the workspace. Beyond the unit tests, each crate from `riskrt-feed` onward has an integration test that runs the real threaded pipeline up to that stage and checks it against a single-threaded reference:
@@ -336,6 +338,36 @@ What those lines mean:
 - 1,492 pricing batches for 1,493 sets. The scheduler kept up with every curve set, about 6.7 ms per full 2,000-trade reprice including ladders.
 Measured costs in ferrumquant on the development machine (2 cores): a 10-pillar bootstrap is about 0.27 ms, the Jacobian on top about 4.5 ms serial or 3.75 ms on two threads, a 30-year swap NPV about 5 µs, and its 10-bucket zero ladder about 110 µs. The Jacobian is the per-tick cost that scales with cores; the ladder is the per-trade cost that scales with workers.
  
+## Benchmarks
+ 
+Three benches in `crates/riskrt-engine/benches`, run with `./build.sh bench` (or `./build.sh bench quote_to_risk -- --iters 1000`). The first two are criterion microbenchmarks of the two costs that set the engine's ceiling; the third drives the real threaded engine and reports a latency distribution.
+ 
+| Bench | What it measures |
+|---|---|
+| `curve_build` | `bootstrap` alone (the kernel floor), then `build_curve` (base bootstrap, 2n bumped bootstraps for the Jacobian, shifted copies) on rayon pools of 1, 2, 4... threads up to the machine's parallelism. This is the per-tick cost that extra cores buy back. |
+| `price_batch` | `price_one` for a swap and a bond (NPV, DV01, ten-bucket par ladder), then `price_batch` over the 2,000-trade demo portfolio on pools of 1, 2, 4... threads, as trades per second. Where the throughput stops doubling is where pricing saturates. |
+| `quote_to_risk` | One tick is injected into a feed and the bench waits for it to appear in a published `CurveSet` (quote to curve) and then for every trade on that curve to be repriced against that set in a published `RiskSnapshot` (quote to risk). One tick in flight at a time, p50/p90/p95/p99/max over the run. Two scenarios: `idle`, where the other curves are quiet, and `loaded`, where simulated feeds tick the other curves at `--rate` per second each. |
+ 
+`quote_to_risk` takes `--iters`, `--warmup`, `--trades`, `--curves`, `--rate`, `--workers` and `--curve-workers`, and prints a Markdown row per scenario.
+ 
+Numbers from the 2-core development container (2,000 trades, 3 curves, 2 pricing workers, 2 curve workers), to show the shape rather than the ceiling. Run it on real hardware for real numbers.
+ 
+| Microbenchmark | 1 thread | 2 threads |
+|---|---|---|
+| bootstrap, 10 pillars | 183 µs | |
+| build_curve, 10 pillars | 4.31 ms | 2.36 ms |
+| price_one, swap | 37 µs | |
+| price_one, bond | 3.5 µs | |
+| price_batch, 2,000 trades | 58 ms (34k trades/s) | 34 ms (60k trades/s) |
+ 
+| quote_to_risk | p50 ms | p95 ms | p99 ms | max ms |
+|---|---|---|---|---|
+| idle (quote to curve) | 2.4 | 3.7 | 4.9 | 7.8 |
+| idle (quote to risk) | 13.3 | 17.4 | 20.5 | 21.0 |
+| loaded, 2,000 ticks/s on each other curve (quote to risk) | 103 | 134 | 146 | 155 |
+ 
+What the shape says. The Jacobian scales with cores (4.3 ms to 2.4 ms on two threads) and is the floor of quote-to-curve. Pricing scales with workers at about 1.75x on two threads, with the remainder being the bootstrap and the aggregator on the same two cores. The loaded scenario is the two pools and the feed threads contending for two cores: the curve builder and the pricing workers each slow the other down, so the one-at-a-time latency is about eight times the idle figure. On a machine with cores to separate the pools this gap is what core pinning should close, and this bench is how to tell whether it did.
+ 
 ## Integration with ferrumquant
  
 riskrt drove several changes in ferrumquant, all made so the library could serve a real-time engine:
@@ -358,10 +390,10 @@ Conventions carried across the boundary:
 - **Fixed valuation date per session.** Rolling the date intraday means rebuilding every instrument and curve, which the engine supports mechanically (publish a new portfolio and curve set) but does not orchestrate yet.
 - **Intraday portfolio changes.** `Portfolio`, `CurveIndex` and `FqPricer` are immutable. Adding a trade means building new ones and restarting the scheduler and aggregator on them. The design allows it; the engine does not expose it yet.
 - **Single-curve swaps only.** Split projection and discount curves need DV01 across two curves and are rejected for now.
-- **No core pinning.** It belongs in the rayon pools' `start_handler` and waits on benchmark evidence.
+- **No core pinning.** It belongs in the rayon pools' `start_handler`; `quote_to_risk` loaded vs idle is the evidence it waits on.
 - **ferrumquant is not pinned.** By choice while both repositories move; see [Building and running](#building-and-running).
 Next in the plan:
  
-1. `benches/` with criterion: bootstrap cost, `price_batch` against worker count, and end-to-end quote-to-risk latency at p50, p95 and p99, to find where the engine saturates and whether core pinning earns its keep.
-2. `riskrt-scenario`: parallel shift and twist ladders over the whole portfolio on the worker pool, reusing the pre-shifted curves.
-3. A second `Pricer` adapter for ferrumquant's commodities crates once they land.
+1. A commodities slice: `FuturesCurve`-backed curves in `CurveSet` (no bootstrap, no Jacobian; the strip is its own ladder), gas and oil swap products, and a second arm in the pricer, against ferrumquant's `fq-commod-core`, `fq-gas` and `fq-oil`.
+2. Core pinning in the rayon pools' `start_handler`, judged by `quote_to_risk` loaded vs idle.
+3. `riskrt-scenario`: parallel shift and twist ladders over the whole portfolio on the worker pool, reusing the pre-shifted curves.
