@@ -11,6 +11,7 @@ use fq_rates::index::OvernightIndex;
 use rayon::prelude::*;
 use riskrt_core::{CurveId, MarketVersion, QuoteId};
 use riskrt_market::QuoteSnapshot;
+use std::sync::Arc;
 
 /// One basis point, in rate units. Every risk number this crate hands out is
 /// per basis point.
@@ -43,6 +44,10 @@ impl Default for BuildConfig {
 pub struct BuiltCurve {
     id: CurveId,
     quotes_version: MarketVersion,
+    /// The fixings this curve was calibrated with. Pricing must use these,
+    /// not whatever index is current, or a curve built against yesterday's
+    /// fixings would be valued with today's.
+    index: Arc<OvernightIndex>,
     base: DiscountCurve,
     up: DiscountCurve,
     down: DiscountCurve,
@@ -63,7 +68,7 @@ pub fn build_curve(
     spec: &CurveSpec,
     valuation: Date,
     quotes: &QuoteSnapshot,
-    index: &OvernightIndex,
+    index: &Arc<OvernightIndex>,
     cfg: &BuildConfig,
 ) -> Result<BuiltCurve, CurveBuildError> {
     let rate_of = |quote: QuoteId| {
@@ -132,12 +137,13 @@ pub fn build_curve(
     Ok(BuiltCurve {
         id: spec.id,
         quotes_version: quotes.version(),
+        index: Arc::clone(index),
         up: curve.shifted(shift),
         down: curve.shifted(-shift),
         bucket_up: bucket(shift)?,
         bucket_down: bucket(-shift)?,
         base: curve,
-        jacobian: CurveJacobian { keys, matrix, bump },
+        jacobian: CurveJacobian::new(keys, matrix, bump)?,
         pillar_quotes,
         zero_bump: shift,
     })
@@ -161,6 +167,11 @@ impl BuiltCurve {
         self.quotes_version
     }
 
+    /// The fixings this curve was calibrated with; price with these.
+    pub fn index(&self) -> &Arc<OvernightIndex> {
+        &self.index
+    }
+
     /// The curve to price against.
     pub fn curve(&self) -> &DiscountCurve {
         &self.base
@@ -177,7 +188,7 @@ impl BuiltCurve {
 
     /// Instrument behind each node and each ladder bucket, in node order.
     pub fn keys(&self) -> &[InstrumentKey] {
-        &self.jacobian.keys
+        self.jacobian.keys()
     }
 
     /// `matrix[i][j]` = d(zero rate of node i) / d(par quote j).
@@ -302,8 +313,8 @@ mod tests {
     use fq_rates::swap::{OisSwap, SwapError, SwapSide, Tenor};
     use riskrt_core::Tick;
 
-    fn built() -> (BuiltCurve, OvernightIndex) {
-        let index = OvernightIndex::sofr();
+    fn built() -> (BuiltCurve, Arc<OvernightIndex>) {
+        let index = Arc::new(OvernightIndex::sofr());
         let snap = snapshot(10, &[ticks(0, 1, 0.0)]);
         let curve =
             build_curve(&spec(0, 0), today(), &snap, &index, &BuildConfig::default()).unwrap();
@@ -354,7 +365,7 @@ mod tests {
 
     #[test]
     fn result_does_not_depend_on_thread_count() {
-        let index = OvernightIndex::sofr();
+        let index = Arc::new(OvernightIndex::sofr());
         let snap = snapshot(10, &[ticks(0, 1, 0.0)]);
         let build_on = |threads: usize| {
             let pool = rayon::ThreadPoolBuilder::new()
@@ -370,7 +381,7 @@ mod tests {
 
     #[test]
     fn pillar_quotes_follow_node_order_not_spec_order() {
-        let index = OvernightIndex::sofr();
+        let index = Arc::new(OvernightIndex::sofr());
         // Pillars listed longest first; quote ids follow that listing.
         let reversed: Vec<_> = QUOTES
             .iter()
@@ -476,7 +487,7 @@ mod tests {
 
     #[test]
     fn missing_quote_is_not_ready() {
-        let index = OvernightIndex::sofr();
+        let index = Arc::new(OvernightIndex::sofr());
         let mut batch = ticks(0, 1, 0.0);
         batch.remove(4);
         let err = build_curve(
@@ -498,7 +509,7 @@ mod tests {
 
     #[test]
     fn absurd_quote_is_a_bootstrap_error_not_a_panic() {
-        let index = OvernightIndex::sofr();
+        let index = Arc::new(OvernightIndex::sofr());
         let mut batch = ticks(0, 1, 0.0);
         batch[9].value = 50.0; // 5000% for 30 years
         let err = build_curve(
@@ -514,7 +525,7 @@ mod tests {
 
     #[test]
     fn records_the_quote_version_it_was_built_from() {
-        let index = OvernightIndex::sofr();
+        let index = Arc::new(OvernightIndex::sofr());
         let snap = snapshot(10, &[ticks(0, 1, 0.0), ticks(0, 2, 0.0001)]);
         let curve =
             build_curve(&spec(0, 0), today(), &snap, &index, &BuildConfig::default()).unwrap();

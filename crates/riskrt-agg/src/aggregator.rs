@@ -1,6 +1,6 @@
 //! The per-trade table, and the thread that turns batches into snapshots.
 
-use crate::snapshot::RiskSnapshot;
+use crate::snapshot::{RiskSnapshot, TradeStatus};
 use crossbeam::channel::Receiver;
 use riskrt_core::{BookId, MarketVersion, Portfolio, TradeId};
 use riskrt_curves::{Subscriber, publish};
@@ -17,6 +17,8 @@ pub struct AggStats {
     pub stale_dropped: u64,
     /// Results ignored because the trade id was outside the portfolio.
     pub unknown_dropped: u64,
+    /// Failures applied (a trade marked failed, or kept failed).
+    pub failures_applied: u64,
 }
 
 /// Owns the latest-result-per-trade table. Single owner, no threads;
@@ -60,6 +62,7 @@ impl Aggregator {
     pub fn apply(&mut self, batch: &PricedBatch) -> Arc<RiskSnapshot> {
         self.stats.batches += 1;
         let mut table = self.current.table().to_vec();
+        let mut status = self.current.statuses().to_vec();
         for priced in &batch.trades {
             let trade: TradeId = priced.risk.trade;
             let Some(slot) = table.get_mut(trade.index()) else {
@@ -74,12 +77,36 @@ impl Aggregator {
                 continue;
             }
             *slot = Some(Arc::new(priced.clone()));
+            status[trade.index()] = TradeStatus::Priced;
             self.stats.trades_applied += 1;
+        }
+        for failure in &batch.failed {
+            let Some(slot) = status.get_mut(failure.trade.index()) else {
+                self.stats.unknown_dropped += 1;
+                continue;
+            };
+            if table[failure.trade.index()]
+                .as_ref()
+                .is_some_and(|old| old.risk.version > batch.version)
+            {
+                self.stats.stale_dropped += 1;
+                continue;
+            }
+            let since = match slot {
+                TradeStatus::Failed { since, .. } => *since,
+                _ => batch.version,
+            };
+            *slot = TradeStatus::Failed {
+                since,
+                error: failure.error.clone(),
+            };
+            self.stats.failures_applied += 1;
         }
         let version: MarketVersion = batch.version.max(self.current.version());
         self.current = Arc::new(RiskSnapshot::from_table(
             version,
             table,
+            status,
             &self.books,
             self.book_count,
             self.curve_count,
@@ -157,7 +184,98 @@ mod tests {
         PricedBatch {
             version: MarketVersion(version),
             trades,
+            failed: vec![],
         }
+    }
+
+    fn failure(trade: u32, reason: &str) -> riskrt_sched::TradeFailure {
+        riskrt_sched::TradeFailure {
+            trade: TradeId(trade),
+            error: riskrt_sched::PricingError::Invalid {
+                trade: TradeId(trade),
+                reason: reason.into(),
+            },
+        }
+    }
+
+    #[test]
+    fn a_failed_trade_keeps_its_last_numbers_and_is_flagged_until_it_prices_again() {
+        let mut agg = aggregator();
+        agg.apply(&batch(
+            1,
+            vec![
+                priced(0, 0, 1, 100.0, 10.0),
+                priced(1, 0, 1, 50.0, -4.0),
+                priced(2, 1, 1, -20.0, 2.0),
+            ],
+        ));
+        let before = agg.current();
+        assert!(before.is_healthy());
+
+        // Round 2: trade 1 fails, the others reprice.
+        let mut b = batch(
+            2,
+            vec![priced(0, 0, 2, 101.0, 10.0), priced(2, 1, 2, -21.0, 2.0)],
+        );
+        b.failed = vec![failure(1, "non-finite risk")];
+        let s = agg.apply(&b);
+        assert_eq!(s.version(), MarketVersion(2));
+        assert_eq!(s.failed_count(), 1);
+        assert!(!s.is_healthy());
+        assert!(s.is_complete(), "it still has a result");
+        assert_eq!(
+            s.status(TradeId(1)),
+            Some(&TradeStatus::Failed {
+                since: MarketVersion(2),
+                error: riskrt_sched::PricingError::Invalid {
+                    trade: TradeId(1),
+                    reason: "non-finite risk".into()
+                }
+            })
+        );
+        // Last good numbers stay in the table and in the totals.
+        assert_eq!(s.trade(TradeId(1)).unwrap().risk.risk.pv, 50.0);
+        assert_eq!(s.total().pv, 101.0 + 50.0 - 21.0);
+        assert_eq!(
+            s.failed().map(|(t, _)| t).collect::<Vec<_>>(),
+            vec![TradeId(1)]
+        );
+
+        // Round 3: still failing. `since` is kept, the error is the newest.
+        let mut b = batch(3, vec![]);
+        b.failed = vec![failure(1, "still bad")];
+        let s = agg.apply(&b);
+        assert!(matches!(
+            s.status(TradeId(1)),
+            Some(TradeStatus::Failed { since: MarketVersion(2), error })
+                if error.to_string().contains("still bad")
+        ));
+        assert_eq!(agg.stats().failures_applied, 2);
+
+        // Round 4: it prices again.
+        let s = agg.apply(&batch(4, vec![priced(1, 0, 4, 52.0, -4.0)]));
+        assert_eq!(s.status(TradeId(1)), Some(&TradeStatus::Priced));
+        assert_eq!(s.failed_count(), 0);
+        assert!(s.is_healthy());
+        assert_eq!(s.total().pv, 101.0 + 52.0 - 21.0);
+    }
+
+    #[test]
+    fn a_trade_that_never_priced_and_fails_is_stale_but_not_in_the_totals() {
+        use fq_core::time::Date;
+        use fq_rates::index::OvernightIndex;
+        use riskrt_curves::CurveSet;
+        let mut agg = aggregator();
+        let mut b = batch(1, vec![priced(0, 0, 1, 100.0, 10.0)]);
+        b.failed = vec![failure(2, "boom")];
+        let s = agg.apply(&b);
+        assert_eq!(s.priced_count(), 1);
+        assert_eq!(s.failed_count(), 1);
+        assert_eq!(s.total().pv, 100.0);
+        let today = Date::from_ymd(2026, 9, 23).unwrap();
+        let set = CurveSet::empty(2, today, Arc::new(OvernightIndex::sofr()));
+        // Trade 0 is stale because the set has nothing built; trade 2 because it failed.
+        assert_eq!(s.stale_against(&set), 2);
     }
 
     #[test]
@@ -313,5 +431,34 @@ mod tests {
             a.current().ladder(CurveId(0)),
             b.current().ladder(CurveId(0))
         );
+    }
+
+    #[test]
+    fn trades_on_a_degraded_curve_count_as_stale() {
+        use fq_core::time::Date;
+        use fq_rates::index::OvernightIndex;
+        use riskrt_curves::{CurveBuildError, CurveSet};
+        let mut agg = aggregator();
+        agg.apply(&batch(
+            1,
+            vec![
+                priced(0, 0, 1, 1.0, 1.0),
+                priced(1, 0, 1, 1.0, 1.0),
+                priced(2, 1, 1, 1.0, 1.0),
+            ],
+        ));
+        let snap = agg.current();
+        let today = Date::from_ymd(2026, 9, 23).unwrap();
+        let healthy = CurveSet::empty(2, today, Arc::new(OvernightIndex::sofr()));
+        // Nothing built: every curve is Unbuilt, so everything is stale.
+        assert_eq!(snap.stale_against(&healthy), 3);
+        // A set whose curve 0 failed (and curve 1 unbuilt) still flags all three.
+        let failed = healthy.next(
+            MarketVersion(1),
+            healthy.index().clone(),
+            vec![],
+            vec![(CurveId(0), CurveBuildError::Spec("x".into()))],
+        );
+        assert_eq!(snap.stale_against(&failed), 3);
     }
 }

@@ -92,6 +92,13 @@ fn describe_positions_streams_and_price_agree_with_the_engine() {
         assert_eq!(first.ladders.len(), curves as usize);
         assert_eq!(first.ladders[0].per_bp.len(), demo::TENORS.len());
         assert_eq!(first.trades.len(), trades as usize);
+        assert_eq!(first.failed_count, 0);
+        assert!(
+            first
+                .trades
+                .iter()
+                .all(|t| t.status == v1::TradeStatus::TradePriced as i32 && t.last_error.is_empty())
+        );
         let sum: f64 = first.trades.iter().map(|t| t.risk.unwrap().pv).sum();
         let total = first.total.unwrap().pv;
         assert!((sum - total).abs() <= 1e-6 * total.abs().max(1.0));

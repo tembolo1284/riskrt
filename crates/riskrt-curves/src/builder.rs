@@ -87,9 +87,11 @@ impl CurveBuilder {
     ///
     /// Rebuilds exactly the curves that have a pillar quote newer than the
     /// last snapshot handled (all of them after `set_index`), in parallel.
-    /// Returns the next set, or `None` if no curve was rebuilt. A curve whose
-    /// rebuild fails keeps its previous version and is retried when one of
-    /// its quotes next moves.
+    /// Returns the next set, or `None` if nothing changed. A curve whose
+    /// rebuild fails keeps its previous version, has the failure recorded in
+    /// the set's health so readers can see it, and is retried when one of
+    /// its quotes next moves. A curve waiting for its first quotes is not a
+    /// failure and is not reported.
     pub fn on_snapshot(&mut self, quotes: &QuoteSnapshot) -> Option<Arc<CurveSet>> {
         self.stats.snapshots += 1;
         let seen = self.seen_quotes;
@@ -116,26 +118,28 @@ impl CurveBuilder {
             .collect();
 
         let mut rebuilt = Vec::with_capacity(results.len());
+        let mut failed = Vec::new();
         for (id, result) in results {
             match result {
                 Ok(curve) => rebuilt.push(curve),
                 Err(CurveBuildError::NotReady { .. }) => self.stats.not_ready += 1,
                 Err(e) => {
                     self.stats.failures += 1;
-                    self.stats.last_failure = Some((id, e));
+                    self.stats.last_failure = Some((id, e.clone()));
+                    failed.push((id, e));
                 }
             }
         }
-        if rebuilt.is_empty() {
+        if rebuilt.is_empty() && failed.is_empty() {
             return None;
         }
         self.stats.curves_built += rebuilt.len() as u64;
         self.stats.sets += 1;
-        self.current = Arc::new(self.current.next(
-            quotes.version(),
-            Arc::clone(&self.index),
-            rebuilt,
-        ));
+        self.current =
+            Arc::new(
+                self.current
+                    .next(quotes.version(), Arc::clone(&self.index), rebuilt, failed),
+            );
         Some(self.current())
     }
 }
@@ -290,7 +294,7 @@ mod tests {
             &spec(1, 10),
             today(),
             &v4,
-            &OvernightIndex::sofr(),
+            &Arc::new(OvernightIndex::sofr()),
             &BuildConfig::default(),
         )
         .unwrap();
@@ -298,24 +302,90 @@ mod tests {
     }
 
     #[test]
-    fn failed_rebuild_keeps_the_previous_curve() {
+    fn failed_rebuild_keeps_the_previous_curve_and_publishes_the_failure() {
+        use crate::set::CurveStatus;
         let mut b = builder();
         let v1 = snapshot(20, &[ticks(0, 1, 0.0)]);
         let good = b.on_snapshot(&v1).unwrap();
 
         let v2 = v1.next(&[Tick::new(QuoteId(9), 2, 0, 50.0)]).unwrap(); // 5000%
-        assert!(b.on_snapshot(&v2).is_none());
+        let degraded = b.on_snapshot(&v2).expect("a failure is published");
         assert_eq!(b.stats().failures, 1);
         assert!(matches!(
             b.stats().last_failure,
             Some((CurveId(0), CurveBuildError::Bootstrap(_)))
         ));
-        assert!(Arc::ptr_eq(&b.current(), &good));
+        // Same curve object as before, but the set says it is stale.
+        assert!(Arc::ptr_eq(
+            good.curve(CurveId(0)).unwrap(),
+            degraded.curve(CurveId(0)).unwrap()
+        ));
+        assert_eq!(degraded.version(), MarketVersion(2));
+        assert_eq!(
+            degraded.changed_since(good.version()).count(),
+            0,
+            "no reprice needed"
+        );
+        let h = degraded.health(CurveId(0)).unwrap();
+        assert_eq!(h.status(), CurveStatus::Failed);
+        assert_eq!(
+            (h.built_from, h.attempted, h.failed_since),
+            (MarketVersion(1), MarketVersion(2), Some(MarketVersion(2)))
+        );
+        assert!(!degraded.is_healthy());
 
         // It recovers when the quote does.
         let v3 = v2.next(&[Tick::new(QuoteId(9), 3, 0, 0.0411)]).unwrap();
         let recovered = b.on_snapshot(&v3).unwrap();
-        assert_eq!(recovered.version(), MarketVersion(2));
+        assert_eq!(recovered.version(), MarketVersion(3));
+        assert_eq!(
+            recovered.health(CurveId(0)).unwrap().status(),
+            CurveStatus::Current
+        );
+        assert_eq!(
+            recovered
+                .changed_since(degraded.version())
+                .collect::<Vec<_>>(),
+            vec![CurveId(0)]
+        );
+    }
+
+    #[test]
+    fn index_change_with_a_failing_curve_leaves_it_on_its_old_index() {
+        use crate::set::CurveStatus;
+        let mut b = builder();
+        let v1 = snapshot(20, &[[ticks(0, 1, 0.0), ticks(10, 1, 0.0)].concat()]);
+        let before = b.on_snapshot(&v1).unwrap();
+        let old_index = before.index().clone();
+
+        // Curve 1 gets a quote that cannot bootstrap, then the fixings change.
+        let v2 = v1.next(&[Tick::new(QuoteId(19), 2, 0, 50.0)]).unwrap();
+        b.on_snapshot(&v2).unwrap();
+        let mut fixed = OvernightIndex::sofr();
+        fixed.add_fixing(today(), 0.0431);
+        b.set_index(Arc::new(fixed));
+        let after = b.on_snapshot(&v2).unwrap();
+
+        // Curve 0 moved to the new index; curve 1 kept the old curve and the
+        // old index together, and says so.
+        assert!(Arc::ptr_eq(
+            after.curve(CurveId(0)).unwrap().index(),
+            after.index()
+        ));
+        assert!(Arc::ptr_eq(
+            after.curve(CurveId(1)).unwrap().index(),
+            &old_index
+        ));
+        assert_eq!(
+            after.health(CurveId(0)).unwrap().status(),
+            CurveStatus::Current
+        );
+        assert_eq!(
+            after.health(CurveId(1)).unwrap().status(),
+            CurveStatus::Failed
+        );
+        assert!(!after.health(CurveId(1)).unwrap().index_current);
+        assert_eq!(after.degraded().collect::<Vec<_>>(), vec![CurveId(1)]);
     }
 
     #[test]

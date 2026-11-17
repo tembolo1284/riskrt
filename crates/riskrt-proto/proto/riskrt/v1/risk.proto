@@ -113,6 +113,19 @@ message TradeRisk {
   uint64 version = 2;
   RiskNumbers risk = 3;
   Ladder ladder = 4;
+  // Whether risk/ladder above are current or the last good numbers of a
+  // trade whose latest pricing round failed.
+  TradeStatus status = 5;
+  // Set version at which the current run of failures began; 0 if none.
+  uint64 failed_since_version = 6;
+  string last_error = 7;
+}
+
+enum TradeStatus {
+  TRADE_STATUS_UNSPECIFIED = 0;
+  TRADE_UNPRICED = 1;
+  TRADE_PRICED = 2;
+  TRADE_FAILED = 3;
 }
 
 message RiskUpdate {
@@ -130,10 +143,43 @@ message RiskUpdate {
   repeated Ladder ladders = 7;
   uint32 trade_count = 8;
   uint32 priced_count = 9;
-  // Trades whose curve has moved since they were last priced.
+  // Trades whose numbers cannot be trusted against the current curve set:
+  // their curve moved since they were priced, or their curve is degraded.
   uint32 stale_count = 10;
   // Only when RiskSubscription.include_trades.
   repeated TradeRisk trades = 11;
+  // One per curve, indexed by curve_id. Tells a reader whether the numbers
+  // above reflect the market or a curve that stopped updating.
+  repeated CurveHealth curve_health = 12;
+  // Trades whose latest pricing round failed. Their last good numbers are
+  // still in the totals; see TradeRisk.status for which ones.
+  uint32 failed_count = 13;
+}
+
+enum CurveStatus {
+  CURVE_STATUS_UNSPECIFIED = 0;
+  // No build has succeeded yet.
+  UNBUILT = 1;
+  // The curve reflects the latest quotes it was asked to reflect.
+  CURRENT = 2;
+  // The curve is from built_from_quotes_version; a rebuild at a newer quote
+  // version failed. Risk on it is consistent with the curve, stale against
+  // the market.
+  FAILED = 3;
+  // The curve was built against an older fixing index than the engine's.
+  INDEX_STALE = 4;
+}
+
+message CurveHealth {
+  uint32 curve_id = 1;
+  CurveStatus status = 2;
+  // Quote version the current curve was built from; 0 if unbuilt.
+  uint64 built_from_quotes_version = 3;
+  // Latest quote version a rebuild was attempted at.
+  uint64 attempted_quotes_version = 4;
+  // Quote version at which the current run of failures began; 0 if none.
+  uint64 failed_since_quotes_version = 5;
+  string last_error = 6;
 }
 
 message QuoteSubscription {
@@ -160,3 +206,4 @@ message PriceRequest {
 message PricedTrade {
   TradeRisk trade = 1;
 }
+

@@ -2,7 +2,33 @@
 
 use riskrt_core::{BookId, CurveId, Ladder, MarketVersion, PricedTrade, Risk, TradeId};
 use riskrt_curves::{CurveSet, Versioned};
+use riskrt_sched::PricingError;
 use std::sync::Arc;
+
+/// What the snapshot knows about one trade, beside its numbers.
+///
+/// A failed trade keeps its last good `PricedTrade` (if any) in the table and
+/// in every total, the way a failed curve keeps its last good curve. The
+/// status is how a reader learns those numbers stopped updating.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TradeStatus {
+    /// No result yet.
+    Unpriced,
+    /// The latest pricing round for this trade succeeded.
+    Priced,
+    /// The latest round failed. `since` is the first set version of the
+    /// current run of failures; `error` is the most recent one.
+    Failed {
+        since: MarketVersion,
+        error: PricingError,
+    },
+}
+
+impl TradeStatus {
+    pub fn is_failed(&self) -> bool {
+        matches!(self, Self::Failed { .. })
+    }
+}
 
 /// Portfolio risk as of one batch.
 ///
@@ -14,6 +40,8 @@ use std::sync::Arc;
 pub struct RiskSnapshot {
     version: MarketVersion,
     trades: Vec<Option<Arc<PricedTrade>>>,
+    status: Vec<TradeStatus>,
+    failed: usize,
     total: Risk,
     by_book: Vec<Risk>,
     by_curve: Vec<Risk>,
@@ -27,6 +55,8 @@ impl RiskSnapshot {
         Self {
             version: MarketVersion::ZERO,
             trades: vec![None; trade_count],
+            status: vec![TradeStatus::Unpriced; trade_count],
+            failed: 0,
             total: Risk::ZERO,
             by_book: vec![Risk::ZERO; book_count],
             by_curve: vec![Risk::ZERO; curve_count],
@@ -42,6 +72,7 @@ impl RiskSnapshot {
     pub(crate) fn from_table(
         version: MarketVersion,
         trades: Vec<Option<Arc<PricedTrade>>>,
+        status: Vec<TradeStatus>,
         books: &[BookId],
         book_count: usize,
         curve_count: usize,
@@ -66,9 +97,13 @@ impl RiskSnapshot {
                 slot => *slot = Some(p.ladder.clone()),
             }
         }
+        debug_assert_eq!(status.len(), trades.len());
+        let failed = status.iter().filter(|s| s.is_failed()).count();
         Self {
             version,
             trades,
+            status,
+            failed,
             total,
             by_book,
             by_curve,
@@ -108,9 +143,37 @@ impl RiskSnapshot {
         self.ladders.get(curve.index())?.as_ref()
     }
 
-    /// Latest result for a trade; `None` if it has not been priced yet.
+    /// Latest good result for a trade; `None` if it has never priced. Check
+    /// `status` to learn whether this result is current.
     pub fn trade(&self, trade: TradeId) -> Option<&PricedTrade> {
         self.trades.get(trade.index())?.as_deref()
+    }
+
+    pub fn status(&self, trade: TradeId) -> Option<&TradeStatus> {
+        self.status.get(trade.index())
+    }
+
+    /// One per trade, indexed by `TradeId`.
+    pub fn statuses(&self) -> &[TradeStatus] {
+        &self.status
+    }
+
+    /// Trades whose latest pricing round failed.
+    pub fn failed_count(&self) -> usize {
+        self.failed
+    }
+
+    pub fn failed(&self) -> impl Iterator<Item = (TradeId, &TradeStatus)> {
+        self.status
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.is_failed())
+            .map(|(i, s)| (TradeId(i as u32), s))
+    }
+
+    /// Every trade priced and none failed.
+    pub fn is_healthy(&self) -> bool {
+        self.is_complete() && self.failed == 0
     }
 
     pub fn trade_count(&self) -> usize {
@@ -137,15 +200,25 @@ impl RiskSnapshot {
             .count()
     }
 
-    /// Trades whose curve has been rebuilt in `set` since they were last
-    /// priced: the exact number still to catch up, unlike `older_than`.
+    /// Trades whose numbers cannot be trusted against `set`: their curve has
+    /// been rebuilt since they were priced, their curve is degraded (its
+    /// last rebuild failed, or it is on an older fixing index), or their own
+    /// last pricing round failed. The first kind catches up on the next
+    /// pricing round; the others do not until the curve or the trade
+    /// recovers, which is why a count alone is not enough and the per-curve
+    /// and per-trade statuses travel alongside it.
     pub fn stale_against(&self, set: &CurveSet) -> usize {
         self.trades
             .iter()
-            .flatten()
-            .filter(|p| {
-                set.changed_since(p.risk.version)
-                    .any(|c| c == p.ladder.curve)
+            .zip(&self.status)
+            .filter(|(p, status)| match p {
+                Some(p) => {
+                    let curve = p.ladder.curve;
+                    status.is_failed()
+                        || set.health(curve).is_some_and(|h| h.is_degraded())
+                        || set.changed_since(p.risk.version).any(|c| c == curve)
+                }
+                None => status.is_failed(),
             })
             .count()
     }

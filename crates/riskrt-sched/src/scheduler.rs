@@ -14,6 +14,23 @@ pub struct PricedBatch {
     pub version: MarketVersion,
     /// In ascending `TradeId` order.
     pub trades: Vec<PricedTrade>,
+    /// Trades that were due at `version` and could not be priced, in
+    /// ascending `TradeId` order. Not included: trades whose curve the set
+    /// has not built yet; those stay dirty and are retried.
+    pub failed: Vec<TradeFailure>,
+}
+
+impl PricedBatch {
+    pub fn is_empty(&self) -> bool {
+        self.trades.is_empty() && self.failed.is_empty()
+    }
+}
+
+/// One trade that failed to price in a round.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TradeFailure {
+    pub trade: TradeId,
+    pub error: PricingError,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -28,7 +45,8 @@ pub struct SchedStats {
     pub max_batch: usize,
     /// Trades put back because their curve was not built yet.
     pub requeued: u64,
-    /// Trades dropped for any other pricing error.
+    /// Trades that failed for any other pricing error. They are reported in
+    /// the batch and keep their last good numbers until their curve moves.
     pub failures: u64,
     pub last_failure: Option<(TradeId, PricingError)>,
 }
@@ -89,8 +107,8 @@ impl Scheduler {
     /// pool. Returns `None` if nothing was priced.
     ///
     /// Trades whose curve `set` has not built stay dirty for the next round;
-    /// other failures are recorded in `stats` and the trade is dropped until
-    /// its curve next moves.
+    /// other failures are recorded in `stats`, reported in `failed`, and the
+    /// trade is retried when its curve next moves.
     pub fn price_pending(&mut self, set: &CurveSet) -> Option<PricedBatch> {
         self.batch.clear();
         self.dirty.drain_into(&mut self.batch);
@@ -100,6 +118,7 @@ impl Scheduler {
         let results = price_batch(self.pricer.as_ref(), &self.batch, set);
 
         let mut trades = Vec::with_capacity(results.len());
+        let mut failed = Vec::new();
         for (trade, result) in self.batch.iter().zip(results) {
             match result {
                 Ok(priced) => trades.push(priced),
@@ -109,11 +128,15 @@ impl Scheduler {
                 }
                 Err(e) => {
                     self.stats.failures += 1;
-                    self.stats.last_failure = Some((*trade, e));
+                    self.stats.last_failure = Some((*trade, e.clone()));
+                    failed.push(TradeFailure {
+                        trade: *trade,
+                        error: e,
+                    });
                 }
             }
         }
-        if trades.is_empty() {
+        if trades.is_empty() && failed.is_empty() {
             return None;
         }
         self.stats.batches += 1;
@@ -122,6 +145,7 @@ impl Scheduler {
         Some(PricedBatch {
             version: set.version(),
             trades,
+            failed,
         })
     }
 
@@ -294,5 +318,91 @@ mod tests {
             pool.install(|| sched.round(&set).unwrap())
         };
         assert_eq!(run(1), run(4));
+    }
+
+    /// Prices for real, except that one trade always comes back NaN.
+    struct NanOn(Arc<dyn Pricer>, TradeId);
+    impl Pricer for NanOn {
+        fn price(&self, trade: TradeId, curves: &CurveSet) -> Result<PricedTrade, PricingError> {
+            let mut p = self.0.price(trade, curves)?;
+            if trade == self.1 {
+                p.risk.risk.dv01 = f64::NAN;
+            }
+            Ok(p)
+        }
+        fn trade_count(&self) -> usize {
+            self.0.trade_count()
+        }
+    }
+
+    #[test]
+    fn a_failing_trade_is_reported_in_the_batch_and_retried_when_its_curve_moves() {
+        let (sched, mut builder) = fixture();
+        let pricer: Arc<dyn Pricer> = Arc::new(NanOn(Arc::clone(&sched.pricer), TradeId(2)));
+        let mut sched = Scheduler::new(pricer, sched.index.clone());
+        let v1 = QuoteSnapshot::empty(8)
+            .next(&[ticks(0, 1, 0.0), ticks(1, 1, 0.0)].concat())
+            .unwrap();
+        let set = builder.on_snapshot(&v1).unwrap();
+        let batch = sched.round(&set).unwrap();
+        assert_eq!(ids(&batch), vec![0, 1, 3]);
+        assert_eq!(batch.failed.len(), 1);
+        assert_eq!(batch.failed[0].trade, TradeId(2));
+        assert!(matches!(
+            batch.failed[0].error,
+            PricingError::Invalid { .. }
+        ));
+        assert_eq!(sched.stats().failures, 1);
+        assert_eq!(sched.pending(), 0, "a failed trade is not requeued");
+
+        // Curve 1 moves: trade 2 (curve 0) is not retried, it is not dirty.
+        let v2 = v1.next(&[Tick::new(QuoteId(5), 2, 0, 0.039)]).unwrap();
+        let set = builder.on_snapshot(&v2).unwrap();
+        let batch = sched.round(&set).unwrap();
+        assert_eq!(ids(&batch), vec![1, 3]);
+        assert!(batch.failed.is_empty());
+
+        // Curve 0 moves: trade 2 is retried and fails again, in its own batch.
+        let v3 = v2.next(&[Tick::new(QuoteId(1), 3, 0, 0.0381)]).unwrap();
+        let set = builder.on_snapshot(&v3).unwrap();
+        let batch = sched.round(&set).unwrap();
+        assert_eq!(ids(&batch), vec![0]);
+        assert_eq!(batch.failed.len(), 1);
+        assert_eq!(sched.stats().failures, 2);
+    }
+
+    #[test]
+    fn a_round_where_everything_fails_still_produces_a_batch() {
+        let (sched, mut builder) = fixture();
+        struct Broken(Arc<dyn Pricer>);
+        impl Pricer for Broken {
+            fn price(
+                &self,
+                trade: TradeId,
+                curves: &CurveSet,
+            ) -> Result<PricedTrade, PricingError> {
+                let mut p = self.0.price(trade, curves)?;
+                p.risk.risk.pv = f64::INFINITY;
+                Ok(p)
+            }
+            fn trade_count(&self) -> usize {
+                self.0.trade_count()
+            }
+        }
+        let pricer: Arc<dyn Pricer> = Arc::new(Broken(Arc::clone(&sched.pricer)));
+        let mut sched = Scheduler::new(pricer, sched.index.clone());
+        let v1 = QuoteSnapshot::empty(8)
+            .next(&[ticks(0, 1, 0.0), ticks(1, 1, 0.0)].concat())
+            .unwrap();
+        let set = builder.on_snapshot(&v1).unwrap();
+        let batch = sched
+            .round(&set)
+            .expect("failures alone are worth reporting");
+        assert!(batch.trades.is_empty());
+        assert_eq!(
+            batch.failed.iter().map(|f| f.trade.0).collect::<Vec<_>>(),
+            vec![0, 1, 2, 3]
+        );
+        assert_eq!(sched.stats().batches, 1);
     }
 }

@@ -52,8 +52,39 @@ impl From<&PricedTrade> for v1::TradeRisk {
             version: p.risk.version.0,
             risk: Some(p.risk.risk.into()),
             ladder: Some((&p.ladder).into()),
+            status: v1::TradeStatus::TradePriced as i32,
+            failed_since_version: 0,
+            last_error: String::new(),
         }
     }
+}
+
+/// A trade's numbers together with its status. `priced` is `None` for a
+/// trade that has never priced; it is only sent when it has failed, so a
+/// reader can see the failure.
+pub fn trade_to_wire(
+    trade: TradeId,
+    priced: Option<&PricedTrade>,
+    status: &riskrt_agg::TradeStatus,
+) -> v1::TradeRisk {
+    use riskrt_agg::TradeStatus;
+    let mut w = match priced {
+        Some(p) => v1::TradeRisk::from(p),
+        None => v1::TradeRisk {
+            trade_id: trade.0,
+            ..Default::default()
+        },
+    };
+    match status {
+        TradeStatus::Unpriced => w.status = v1::TradeStatus::TradeUnpriced as i32,
+        TradeStatus::Priced => w.status = v1::TradeStatus::TradePriced as i32,
+        TradeStatus::Failed { since, error } => {
+            w.status = v1::TradeStatus::TradeFailed as i32;
+            w.failed_since_version = since.0;
+            w.last_error = error.to_string();
+        }
+    }
+    w
 }
 
 impl From<v1::TradeRisk> for PricedTrade {
@@ -139,6 +170,34 @@ pub fn position_from_wire(w: v1::Position) -> Result<(TradeId, Position), &'stat
     Ok((TradeId(w.trade_id), position))
 }
 
+impl From<riskrt_curves::CurveStatus> for v1::CurveStatus {
+    fn from(s: riskrt_curves::CurveStatus) -> Self {
+        use riskrt_curves::CurveStatus as S;
+        match s {
+            S::Unbuilt => v1::CurveStatus::Unbuilt,
+            S::Current => v1::CurveStatus::Current,
+            S::Failed => v1::CurveStatus::Failed,
+            S::IndexStale => v1::CurveStatus::IndexStale,
+        }
+    }
+}
+
+/// One curve's health as the engine reports it.
+pub fn curve_health_to_wire(curve: CurveId, h: &riskrt_curves::CurveHealth) -> v1::CurveHealth {
+    v1::CurveHealth {
+        curve_id: curve.0,
+        status: v1::CurveStatus::from(h.status()) as i32,
+        built_from_quotes_version: h.built_from.0,
+        attempted_quotes_version: h.attempted.0,
+        failed_since_quotes_version: h.failed_since.map_or(0, |v| v.0),
+        last_error: h
+            .last_error
+            .as_ref()
+            .map(|e| e.to_string())
+            .unwrap_or_default(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,5 +273,35 @@ mod tests {
             s.fixed_leg = 0;
         }
         assert!(position_from_wire(w).is_err());
+    }
+
+    #[test]
+    fn trade_status_rides_along_with_the_numbers() {
+        use riskrt_agg::TradeStatus;
+        let p = PricedTrade {
+            risk: TradeRisk::new(TradeId(4), MarketVersion(9), Risk { pv: 1.0, dv01: 2.0 }),
+            ladder: Ladder::zero(CurveId(1), 3),
+        };
+        let ok = trade_to_wire(TradeId(4), Some(&p), &TradeStatus::Priced);
+        assert_eq!(ok.status, v1::TradeStatus::TradePriced as i32);
+        assert_eq!(ok.version, 9);
+
+        let failed = TradeStatus::Failed {
+            since: MarketVersion(7),
+            error: riskrt_sched::PricingError::Invalid {
+                trade: TradeId(4),
+                reason: "nan".into(),
+            },
+        };
+        let w = trade_to_wire(TradeId(4), Some(&p), &failed);
+        assert_eq!(w.status, v1::TradeStatus::TradeFailed as i32);
+        assert_eq!(w.failed_since_version, 7);
+        assert!(w.last_error.contains("nan"));
+        assert_eq!(w.risk.unwrap().pv, 1.0, "last good numbers still travel");
+
+        let never = trade_to_wire(TradeId(4), None, &failed);
+        assert_eq!(never.trade_id, 4);
+        assert!(never.risk.is_none());
+        assert_eq!(never.status, v1::TradeStatus::TradeFailed as i32);
     }
 }

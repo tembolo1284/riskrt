@@ -119,7 +119,8 @@ impl Pricer for FqPricer {
                 trade,
                 curve: built.curve,
             })?;
-        let index = curves.index();
+        // The fixings the curve was calibrated with, not the set's target index.
+        let index = curve.index().as_ref();
 
         let (pv, dv01, per_bp) = match &built.instrument {
             Instrument::Swap(swap) => {

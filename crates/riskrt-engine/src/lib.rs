@@ -24,3 +24,7 @@ pub mod error;
 pub use config::EngineConfig;
 pub use engine::{Engine, EngineStats};
 pub use error::EngineError;
+
+/// The types a reader of `Engine::snapshots()` and `Engine::curves()` needs.
+pub use riskrt_agg::{RiskSnapshot, TradeStatus};
+pub use riskrt_curves::{CurveHealth, CurveSet, CurveStatus, Subscriber, Wait};

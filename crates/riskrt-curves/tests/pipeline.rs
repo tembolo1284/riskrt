@@ -131,6 +131,7 @@ fn curves_end_on_the_single_threaded_answer_and_followers_see_it() {
     let quotes = reader.load();
     assert!(sets.is_closed());
     assert!(last.is_complete());
+    assert!(last.is_healthy());
     assert_eq!(last.quotes_version(), quotes.version());
     assert_eq!(quotes.ticks(), final_quotes().ticks());
 

@@ -1,8 +1,9 @@
 //! The engine as a whole: start, run to the end of the feeds, verify.
 
-use riskrt_core::{Risk, TradeId};
-use riskrt_curves::Wait;
+use riskrt_core::{CurveId, Risk, Tick, TradeId};
+use riskrt_curves::{CurveStatus, Wait};
 use riskrt_engine::{Engine, EngineConfig, demo};
+use riskrt_feed::TickSource;
 use std::time::Duration;
 
 #[test]
@@ -96,4 +97,112 @@ fn dropping_the_engine_stops_endless_feeds() {
         );
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+/// A feed that ticks a curve normally, then poisons one pillar, then heals it.
+struct Poisoned {
+    curve: u32,
+    poison: bool,
+    seq: u64,
+    phase: usize,
+}
+
+impl TickSource for Poisoned {
+    fn next_tick(&mut self) -> Option<Tick> {
+        self.seq += 1;
+        let q = |k: usize| demo::quote_id(self.curve, k);
+        let tick = match self.phase {
+            // Every pillar once, at 4%.
+            p if p < demo::TENORS.len() => Tick::new(q(p), self.seq, self.seq, 0.04),
+            // Then the 30Y pillar at 5000% (the bootstrap cannot fit it),
+            // or a sane re-tick for the curve that is not being poisoned.
+            p if p == demo::TENORS.len() => {
+                let v = if self.poison { 50.0 } else { 0.04 };
+                Tick::new(q(9), self.seq, self.seq, v)
+            }
+            // Then back to sanity.
+            p if p == demo::TENORS.len() + 1 => Tick::new(q(9), self.seq, self.seq, 0.041),
+            _ => return None,
+        };
+        self.phase += 1;
+        // Give the pipeline time to react between phases so each state is observable.
+        if self.phase >= demo::TENORS.len() {
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        Some(tick)
+    }
+}
+
+#[test]
+fn a_curve_that_fails_to_rebuild_is_reported_and_recovers() {
+    let curves = 2;
+    let portfolio = demo::portfolio(30, curves, 2, 5);
+    let config =
+        EngineConfig::new(portfolio.clone(), demo::curve_specs(curves).unwrap()).with_workers(1, 1);
+    let feeds: Vec<Box<dyn TickSource>> = (0..curves)
+        .map(|c| {
+            Box::new(Poisoned {
+                curve: c,
+                poison: c == 0,
+                seq: 0,
+                phase: 0,
+            }) as Box<dyn TickSource>
+        })
+        .collect();
+    let engine = Engine::start(config, feeds).unwrap();
+    let sets = engine.curves();
+    let snapshots = engine.snapshots();
+
+    // Watch the curve sets go by and record what each said about curve 0.
+    let mut seen = riskrt_core::MarketVersion::ZERO;
+    let mut statuses = Vec::new();
+    let mut stale_while_failed = None;
+    loop {
+        match sets.wait_newer(seen, Duration::from_secs(30)) {
+            Wait::Updated(set) => {
+                seen = set.version();
+                let status = set.health(CurveId(0)).unwrap().status();
+                if status == CurveStatus::Failed && stale_while_failed.is_none() {
+                    // While curve 0 is failed, every trade on it is reported stale,
+                    // even though their numbers were priced successfully.
+                    std::thread::sleep(Duration::from_millis(100));
+                    stale_while_failed = Some(snapshots.load().stale_against(&set));
+                }
+                // Curve 1 may publish before curve 0 has all its quotes, so a
+                // leading Unbuilt is possible and not interesting.
+                if status != CurveStatus::Unbuilt && statuses.last() != Some(&status) {
+                    statuses.push(status);
+                }
+            }
+            Wait::TimedOut => panic!("stalled"),
+            Wait::Closed => break,
+        }
+    }
+    let stats = engine.wait();
+
+    assert_eq!(
+        statuses,
+        vec![
+            CurveStatus::Current,
+            CurveStatus::Failed,
+            CurveStatus::Current
+        ]
+    );
+    assert_eq!(stats.curves.failures, 1, "only curve 0 was poisoned");
+    let on_curve_0 = portfolio_on(&portfolio, CurveId(0));
+    let stale = stale_while_failed.expect("saw the failed state");
+    assert_eq!(
+        stale, on_curve_0,
+        "every trade on the failed curve, and only those, is stale"
+    );
+    let last = sets.load();
+    assert!(last.is_healthy());
+    assert_eq!(snapshots.load().stale_against(&last), 0);
+}
+
+fn portfolio_on(p: &riskrt_core::Portfolio, curve: CurveId) -> usize {
+    p.positions()
+        .iter()
+        .filter(|pos| pos.discount == curve || pos.forward == Some(curve))
+        .count()
 }

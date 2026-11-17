@@ -8,6 +8,9 @@ description = "Wire types for the riskrt gRPC service, plus conversions to riskr
 
 [dependencies]
 riskrt-core.workspace = true
+riskrt-curves.workspace = true
+riskrt-agg.workspace = true
+riskrt-sched.workspace = true
 prost.workspace = true
 tonic.workspace = true
 tonic-prost.workspace = true

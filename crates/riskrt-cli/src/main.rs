@@ -2,7 +2,7 @@
 
 use clap::Parser;
 use riskrt_core::{BookId, CurveId, Tick};
-use riskrt_engine::{Engine, EngineConfig, EngineStats, demo};
+use riskrt_engine::{Engine, EngineConfig, EngineStats, TradeStatus, demo};
 use riskrt_feed::TickSource;
 use riskrt_grpc::{Handles, spawn_server};
 use std::net::SocketAddr;
@@ -142,7 +142,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let snap = snapshots.load();
         let set = curve_sets.load();
         println!(
-            "\n[{:>6.1}s] risk v{} (curves v{}, quotes v{})  priced {}/{}  behind {}",
+            "\n[{:>6.1}s] risk v{} (curves v{}, quotes v{})  priced {}/{}  behind {}  failed {}",
             started.elapsed().as_secs_f64(),
             snap.version().0,
             set.version().0,
@@ -150,7 +150,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             snap.priced_count(),
             snap.trade_count(),
             snap.stale_against(&set),
+            snap.failed_count(),
         );
+        if let Some((t, TradeStatus::Failed { since, error })) = snap.failed().next() {
+            println!("  first failed trade {} since v{}: {}", t.0, since.0, error);
+        }
         let t = snap.total();
         println!("  total     pv {:>16.2}   dv01 {:>12.2}", t.pv, t.dv01);
         for (b, r) in snap.books().iter().enumerate() {
@@ -167,8 +171,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .join("")
                 })
                 .unwrap_or_else(|| "  (not built)".to_owned());
+            let health = set
+                .health(CurveId(c as u32))
+                .map(|h| match h.last_error.as_ref() {
+                    Some(e) => format!("{:?} ({e})", h.status()),
+                    None => format!("{:?}", h.status()),
+                })
+                .unwrap_or_default();
             println!(
-                "  curve {:<3} pv {:>16.2}   dv01 {:>12.2}   ladder{ladder}",
+                "  curve {:<3} pv {:>16.2}   dv01 {:>12.2}   {health:<8} ladder{ladder}",
                 c, r.pv, r.dv01
             );
         }

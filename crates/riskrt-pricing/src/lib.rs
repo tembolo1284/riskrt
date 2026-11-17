@@ -13,7 +13,9 @@
 //!   the portfolio; each tick only prices against the pinned `CurveSet`.
 //! - Every number is per basis point and tagged with the curve set version.
 //! - `price_batch` is the fan-out other stages will use: the same trades in
-//!   the same order give the same bytes whatever the thread count.
+//!   the same order give the same bytes whatever the thread count. Every
+//!   result passes `validate` (finite numbers, right ladder length, right
+//!   version and curve) before it leaves this crate.
 
 #![forbid(unsafe_code)]
 
@@ -23,4 +25,4 @@ pub mod pricer;
 
 pub use error::PricingError;
 pub use fq_adapter::FqPricer;
-pub use pricer::{Pricer, price_batch};
+pub use pricer::{Pricer, price_batch, validate};

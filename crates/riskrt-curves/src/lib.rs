@@ -32,5 +32,5 @@ pub use build::{BP, BuildConfig, BuiltCurve, build_curve};
 pub use builder::{BuildStats, Control, CurveBuilder, spawn_curve_builder};
 pub use error::CurveBuildError;
 pub use publish::{Publisher, Subscriber, Versioned, Wait};
-pub use set::CurveSet;
+pub use set::{CurveHealth, CurveSet, CurveStatus};
 pub use spec::{CurveSetSpec, CurveSpec, Pillar};

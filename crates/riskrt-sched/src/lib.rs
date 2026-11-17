@@ -22,5 +22,6 @@
 pub mod scheduler;
 pub mod worker;
 
-pub use scheduler::{PricedBatch, SchedStats, Scheduler};
+pub use riskrt_pricing::PricingError;
+pub use scheduler::{PricedBatch, SchedStats, Scheduler, TradeFailure};
 pub use worker::{SchedConfig, spawn_scheduler};

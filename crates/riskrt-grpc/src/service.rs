@@ -6,7 +6,7 @@ use riskrt_core::{CurveId, MarketVersion, Portfolio, TradeId};
 use riskrt_curves::{CurveSet, CurveSetSpec, Subscriber};
 use riskrt_market::{MarketReader, QuoteSnapshot};
 use riskrt_pricing::Pricer;
-use riskrt_proto::convert::position_to_wire;
+use riskrt_proto::convert::{curve_health_to_wire, position_to_wire, trade_to_wire};
 use riskrt_proto::v1;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -49,14 +49,23 @@ fn risk_update(snap: &RiskSnapshot, set: &CurveSet, include_trades: bool) -> v1:
         .filter_map(|c| snap.ladder(CurveId(c as u32)))
         .map(v1::Ladder::from)
         .collect();
-    let trades = if include_trades {
-        (0..snap.trade_count())
-            .filter_map(|t| snap.trade(TradeId(t as u32)))
-            .map(v1::TradeRisk::from)
-            .collect()
-    } else {
-        Vec::new()
-    };
+    // With include_trades: every trade that has a result or a failure.
+    // Without: only the failures, so a reader always learns about them.
+    let trades = snap
+        .statuses()
+        .iter()
+        .enumerate()
+        .filter_map(|(i, status)| {
+            let id = TradeId(i as u32);
+            let priced = snap.trade(id);
+            let send = if include_trades {
+                priced.is_some() || status.is_failed()
+            } else {
+                status.is_failed()
+            };
+            send.then(|| trade_to_wire(id, priced, status))
+        })
+        .collect();
     v1::RiskUpdate {
         version: snap.version().0,
         curves_version: set.version().0,
@@ -68,7 +77,14 @@ fn risk_update(snap: &RiskSnapshot, set: &CurveSet, include_trades: bool) -> v1:
         trade_count: snap.trade_count() as u32,
         priced_count: snap.priced_count() as u32,
         stale_count: snap.stale_against(set) as u32,
+        failed_count: snap.failed_count() as u32,
         trades,
+        curve_health: set
+            .healths()
+            .iter()
+            .enumerate()
+            .map(|(c, h)| curve_health_to_wire(CurveId(c as u32), h))
+            .collect(),
     }
 }
 

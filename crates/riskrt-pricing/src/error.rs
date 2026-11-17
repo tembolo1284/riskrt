@@ -28,6 +28,14 @@ pub enum PricingError {
         trade: TradeId,
         reason: String,
     },
+    /// The pricer returned a result riskrt will not aggregate: wrong trade
+    /// or version, a curve the set does not have, a ladder of the wrong
+    /// length, or a non-finite number. Caught by `validate` so that one bad
+    /// adapter cannot poison a portfolio total.
+    Invalid {
+        trade: TradeId,
+        reason: String,
+    },
     Date(DateError),
     Swap(SwapError),
     Bond(BondError),
@@ -52,6 +60,7 @@ impl core::fmt::Display for PricingError {
             Self::Build { trade, reason } => {
                 write!(f, "{trade}: cannot build instrument: {reason}")
             }
+            Self::Invalid { trade, reason } => write!(f, "{trade}: invalid result: {reason}"),
             Self::Date(e) => write!(f, "{e}"),
             Self::Swap(e) => write!(f, "{e}"),
             Self::Bond(e) => write!(f, "{e}"),

@@ -23,4 +23,4 @@ pub mod aggregator;
 pub mod snapshot;
 
 pub use aggregator::{AggStats, Aggregator, spawn_aggregator};
-pub use snapshot::RiskSnapshot;
+pub use snapshot::{RiskSnapshot, TradeStatus};
