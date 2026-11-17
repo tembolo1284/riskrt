@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  check:
+    name: build, test, clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out riskrt
+        uses: actions/checkout@v4
+        with:
+          path: riskrt
+
+      # The pricing kernel is a path dependency at ../ferrumquant. It is not
+      # pinned on purpose while both repositories are moving: a kernel change
+      # that breaks the adapter shows up here the same day.
+      - name: Check out ferrumquant beside it
+        uses: actions/checkout@v4
+        with:
+          repository: tembolo1284/ferrumquant
+          path: ferrumquant
+
+      - name: Install the toolchain from rust-toolchain.toml
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: riskrt
+
+      - name: ./build.sh check
+        working-directory: riskrt
+        run: ./build.sh check
+
+      - name: ./build.sh flake 3
+        working-directory: riskrt
+        run: ./build.sh flake 3
