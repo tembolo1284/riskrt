@@ -215,6 +215,16 @@ impl CurveSet {
 
     /// Curves rebuilt after set version `seen`, in id order. Correct across
     /// skipped versions, so a slow consumer still finds every dirty curve.
+    /// The set version at which `id` was last rebuilt; `ZERO` if never.
+    /// A trade priced against any set at or after this version reflects
+    /// the curve's current build.
+    pub fn rebuilt_at(&self, id: CurveId) -> MarketVersion {
+        self.changed_at
+            .get(id.index())
+            .copied()
+            .unwrap_or(MarketVersion::ZERO)
+    }
+
     pub fn changed_since(&self, seen: MarketVersion) -> impl Iterator<Item = CurveId> + '_ {
         self.changed_at
             .iter()

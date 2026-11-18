@@ -252,7 +252,7 @@ fn scenario(name: &str, o: &Opts, background_rate: u64) {
                         break q.version();
                     }
                 }
-                _ => panic!("quote never published"),
+                _ => panic!("iteration {i}: quote never published"),
             }
         };
         // 2. A curve set built from that quote version (or later) is out.
@@ -265,26 +265,35 @@ fn scenario(name: &str, o: &Opts, background_rate: u64) {
                         break set;
                     }
                 }
-                _ => panic!("curve never rebuilt"),
+                _ => panic!("iteration {i}: curve never rebuilt"),
             }
         };
         let t_curve = Instant::now();
-        // 3. Every trade on curve 0 has been repriced against that set.
+        // 3. Every trade on curve 0 has been repriced at or after the set
+        //    version where curve 0 was rebuilt. Not `set.version()`: under
+        //    load the set we observed may already be several versions past
+        //    that rebuild (other curves moved), and curve 0's trades were
+        //    priced against the rebuild version and will not move again
+        //    until the next probe.
+        let rebuilt_at = set.rebuilt_at(CurveId(0));
         loop {
             match snapshots.wait_newer(seen_snap, timeout) {
                 Wait::Updated(s) => {
                     seen_snap = s.version();
                     let done = on_curve_0
                         .iter()
-                        .all(|t| s.trade(*t).is_some_and(|p| p.risk.version >= set.version()));
+                        .all(|t| s.trade(*t).is_some_and(|p| p.risk.version >= rebuilt_at));
                     if done {
                         break;
                     }
                 }
-                _ => panic!("risk never published"),
+                _ => panic!("iteration {i}: risk never published"),
             }
         }
         let t_risk = Instant::now();
+        if i > 0 && i % 250 == 0 {
+            eprintln!("  {name}: {i}/{}", o.warmup + o.iters);
+        }
         if i >= o.warmup {
             samples.push(Sample {
                 to_curve: t_curve - t0,
