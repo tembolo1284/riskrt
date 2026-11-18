@@ -15,6 +15,11 @@ prost.workspace = true
 tonic.workspace = true
 tonic-prost.workspace = true
 
+[dev-dependencies]
+riskrt-market.workspace = true
+fq-core.workspace = true
+fq-rates.workspace = true
+
 [build-dependencies]
 tonic-prost-build.workspace = true
 protox.workspace = true

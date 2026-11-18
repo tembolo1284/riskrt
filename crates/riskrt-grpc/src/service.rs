@@ -6,7 +6,9 @@ use riskrt_core::{CurveId, MarketVersion, Portfolio, TradeId};
 use riskrt_curves::{CurveSet, CurveSetSpec, Subscriber};
 use riskrt_market::{MarketReader, QuoteSnapshot};
 use riskrt_pricing::Pricer;
-use riskrt_proto::convert::{curve_health_to_wire, position_to_wire, trade_to_wire};
+use riskrt_proto::convert::{
+    curve_health_to_wire, curve_update_to_wire, position_to_wire, trade_to_wire,
+};
 use riskrt_proto::v1;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -173,6 +175,33 @@ impl riskrt_proto::Risk for RiskService {
         let stream = tokio_stream::StreamExt::map(
             ReceiverStream::new(rx),
             move |Delivery { value, .. }| Ok(risk_update(&value, &curves.load(), include_trades)),
+        );
+        Ok(Response::new(Box::pin(stream)))
+    }
+
+    type SubscribeCurvesStream = Streaming<v1::CurveUpdate>;
+
+    async fn subscribe_curves(
+        &self,
+        req: Request<v1::CurveSubscription>,
+    ) -> Result<Response<Self::SubscribeCurvesStream>, Status> {
+        let sub = req.into_inner();
+        let sample_months = sub.sample_months;
+        let changed_only = sub.changed_only;
+        let rx = bridge::versioned(
+            "curves",
+            self.h.curves.clone(),
+            MarketVersion::ZERO,
+            interval(sub.min_interval_ms),
+        );
+        let stream = tokio_stream::StreamExt::map(
+            ReceiverStream::new(rx),
+            move |Delivery { value, previous }| {
+                // `previous` is what this client last received, so changed_only
+                // is correct even when the client skipped versions.
+                let since = (changed_only && previous != MarketVersion::ZERO).then_some(previous);
+                Ok(curve_update_to_wire(&value, since, sample_months))
+            },
         );
         Ok(Response::new(Box::pin(stream)))
     }

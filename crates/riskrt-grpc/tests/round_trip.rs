@@ -40,6 +40,7 @@ fn describe_positions_streams_and_price_agree_with_the_engine() {
     let server = spawn_server(handles, "127.0.0.1:0".parse().unwrap()).unwrap();
     let addr = server.local_addr();
 
+    let engine_curves = engine.curves();
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async move {
         let mut client = RiskClient::connect(format!("http://{addr}")).await.unwrap();
@@ -117,6 +118,44 @@ fn describe_positions_streams_and_price_agree_with_the_engine() {
         let delta = quotes.next().await.unwrap().unwrap();
         assert!(delta.version > full.version);
         assert!(!delta.quotes.is_empty() && delta.quotes.len() <= spec.quote_count());
+
+        // Curves: every built curve's shape, versioned like the risk stream.
+        let mut shapes = client
+            .subscribe_curves(v1::CurveSubscription {
+                min_interval_ms: 0,
+                sample_months: 6,
+                changed_only: true,
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        let first_shape = shapes.next().await.unwrap().unwrap();
+        assert_eq!(
+            first_shape.curves.len(),
+            curves as usize,
+            "first update is complete"
+        );
+        assert_eq!(first_shape.curve_health.len(), curves as usize);
+        let c0 = first_shape.curves.iter().find(|c| c.curve_id == 0).unwrap();
+        assert_eq!(c0.nodes.len(), demo::TENORS.len());
+        assert_eq!(c0.nodes[6].label, "OIS 5Y");
+        assert_eq!(c0.nodes[6].quote_id, demo::quote_id(0, 6).0);
+        assert!(
+            c0.nodes
+                .iter()
+                .all(|n| n.zero_rate.is_finite() && n.discount > 0.0)
+        );
+        assert!(!c0.samples.is_empty());
+        assert_eq!(c0.reference_day, demo::VALUATION.0);
+        // The engine's own set agrees with what went over the wire.
+        let set = engine_curves.load();
+        let built = set.curve(riskrt_core::CurveId(0)).unwrap();
+        assert_eq!(built.par_quotes().len(), c0.nodes.len());
+        // Later updates carry only what changed, and never go backwards.
+        let next_shape = shapes.next().await.unwrap().unwrap();
+        assert!(next_shape.version > first_shape.version);
+        assert!(!next_shape.curves.is_empty() && next_shape.curves.len() <= curves as usize);
+        assert_eq!(next_shape.curve_health.len(), curves as usize);
 
         // Price: the unary path uses the same pricer and curve set.
         let priced = client

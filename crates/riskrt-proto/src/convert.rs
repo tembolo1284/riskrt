@@ -198,6 +198,92 @@ pub fn curve_health_to_wire(curve: CurveId, h: &riskrt_curves::CurveHealth) -> v
     }
 }
 
+/// One built curve's shape: nodes with zero rate, discount factor and the
+/// par quote behind each, plus a sampled grid every `sample_months` (0 for
+/// none). A screen draws the zero curve from `samples` (or the nodes), the
+/// par curve from the nodes, and the DV01 ladder under them in the same
+/// bucket order.
+pub fn curve_shape_to_wire(
+    curve: &riskrt_curves::BuiltCurve,
+    health: Option<&riskrt_curves::CurveHealth>,
+    sample_months: u32,
+) -> v1::CurveShape {
+    let dc = curve.curve();
+    let reference = dc.reference_date();
+    let n = dc.node_count();
+    let nodes = (0..n)
+        .filter_map(|i| {
+            let date = dc.node_date(i).ok()?;
+            Some(v1::CurveNode {
+                day: date.unix_days(),
+                zero_rate: dc.node_zero_rate(i).ok()?,
+                discount: dc.discount(date).ok()?,
+                par_quote: curve.par_quotes().get(i).copied().unwrap_or(f64::NAN),
+                quote_id: curve.pillar_quotes().get(i).map_or(u32::MAX, |q| q.0),
+                label: curve
+                    .keys()
+                    .get(i)
+                    .map(|k| k.to_string())
+                    .unwrap_or_default(),
+            })
+        })
+        .collect();
+    let mut samples = Vec::new();
+    if sample_months > 0 && n > 0 {
+        if let Ok(last) = dc.node_date(n - 1) {
+            let mut k = 1u32;
+            while let Ok(d) = reference.add_months(k as i32 * sample_months as i32) {
+                if d > last {
+                    break;
+                }
+                if let (Ok(z), Ok(df)) = (dc.zero_rate(d), dc.discount(d)) {
+                    samples.push(v1::CurvePoint {
+                        day: d.unix_days(),
+                        zero_rate: z,
+                        discount: df,
+                    });
+                }
+                k += 1;
+            }
+        }
+    }
+    v1::CurveShape {
+        curve_id: curve.id().0,
+        quotes_version: curve.quotes_version().0,
+        reference_day: reference.unix_days(),
+        nodes,
+        samples,
+        health: health.map(|h| curve_health_to_wire(curve.id(), h)),
+    }
+}
+
+/// One wire update for a curve set. `changed_since` limits the shapes to
+/// curves rebuilt after that version; health is always complete.
+pub fn curve_update_to_wire(
+    set: &riskrt_curves::CurveSet,
+    changed_since: Option<riskrt_core::MarketVersion>,
+    sample_months: u32,
+) -> v1::CurveUpdate {
+    let curve_health = set
+        .healths()
+        .iter()
+        .enumerate()
+        .map(|(c, h)| curve_health_to_wire(CurveId(c as u32), h))
+        .collect();
+    let curves = (0..set.healths().len())
+        .map(|c| CurveId(c as u32))
+        .filter(|c| changed_since.is_none_or(|v| set.changed_since(v).any(|x| x == *c)))
+        .filter_map(|c| set.curve(c).map(|built| (c, built)))
+        .map(|(c, built)| curve_shape_to_wire(built, set.health(c), sample_months))
+        .collect();
+    v1::CurveUpdate {
+        version: set.version().0,
+        quotes_version: set.quotes_version().0,
+        curves,
+        curve_health,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -303,5 +389,71 @@ mod tests {
         assert_eq!(never.trade_id, 4);
         assert!(never.risk.is_none());
         assert_eq!(never.status, v1::TradeStatus::TradeFailed as i32);
+    }
+
+    #[test]
+    fn curve_shape_carries_nodes_par_quotes_and_samples() {
+        use fq_core::time::Date;
+        use fq_rates::index::OvernightIndex;
+        use riskrt_core::{QuoteId, Tick};
+        use riskrt_curves::{BuildConfig, CurveBuilder, CurveSetSpec, CurveSpec};
+        use std::sync::Arc;
+        let tenors = ["1M", "1Y", "5Y", "10Y"];
+        let pillars: Vec<_> = tenors
+            .iter()
+            .enumerate()
+            .map(|(k, t)| (*t, QuoteId(k as u32)))
+            .collect();
+        let today = Date::from_ymd(2026, 9, 23).unwrap();
+        let spec = CurveSetSpec::new(
+            riskrt_core::Day(today.unix_days()),
+            vec![CurveSpec::sofr_ois(CurveId(0), "SOFR", &pillars).unwrap()],
+        )
+        .unwrap();
+        let ticks: Vec<Tick> = (0..4)
+            .map(|k| Tick::new(QuoteId(k), 1, 0, 0.04 + k as f64 * 0.001))
+            .collect();
+        let quotes = riskrt_market::QuoteSnapshot::empty(4).next(&ticks).unwrap();
+        let mut builder = CurveBuilder::new(
+            spec,
+            Arc::new(OvernightIndex::sofr()),
+            BuildConfig::default(),
+        );
+        let set = builder.on_snapshot(&quotes).unwrap();
+
+        let w = curve_update_to_wire(&set, None, 12);
+        assert_eq!(w.version, set.version().0);
+        assert_eq!(w.curves.len(), 1);
+        assert_eq!(w.curve_health.len(), 1);
+        let c = &w.curves[0];
+        assert_eq!(c.curve_id, 0);
+        assert_eq!(c.reference_day, today.unix_days());
+        assert_eq!(c.nodes.len(), 4);
+        // Nodes are in maturity order with the input quote beside each.
+        assert!(c.nodes.windows(2).all(|p| p[0].day < p[1].day));
+        assert_eq!(c.nodes[2].label, "OIS 5Y");
+        assert_eq!(c.nodes[2].par_quote, 0.042);
+        assert_eq!(c.nodes[2].quote_id, 2);
+        assert!(
+            c.nodes
+                .iter()
+                .all(|n| n.zero_rate > 0.03 && n.zero_rate < 0.05)
+        );
+        assert!(c.nodes.iter().all(|n| n.discount > 0.0 && n.discount < 1.0));
+        // Yearly samples out to the 10Y node: 10 points, none past the last node.
+        assert_eq!(c.samples.len(), 10);
+        assert!(c.samples.iter().all(|s| s.day <= c.nodes[3].day));
+        assert!(c.samples.windows(2).all(|p| p[0].day < p[1].day));
+        assert_eq!(
+            c.health.as_ref().unwrap().status,
+            v1::CurveStatus::Current as i32
+        );
+
+        // Nodes only, and changed_only against the current version sends nothing.
+        let bare = curve_update_to_wire(&set, None, 0);
+        assert!(bare.curves[0].samples.is_empty());
+        let none = curve_update_to_wire(&set, Some(set.version()), 0);
+        assert!(none.curves.is_empty());
+        assert_eq!(none.curve_health.len(), 1, "health is always complete");
     }
 }

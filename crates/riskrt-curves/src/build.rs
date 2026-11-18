@@ -56,6 +56,8 @@ pub struct BuiltCurve {
     jacobian: CurveJacobian,
     /// Input quote of each node, in node (maturity) order.
     pillar_quotes: Vec<QuoteId>,
+    /// Input quote per node, same order as `keys`: the par curve.
+    par_quotes: Vec<f64>,
     zero_bump: f64,
 }
 
@@ -144,6 +146,10 @@ pub fn build_curve(
         bucket_down: bucket(-shift)?,
         base: curve,
         jacobian: CurveJacobian::new(keys, matrix, bump)?,
+        par_quotes: pillar_quotes
+            .iter()
+            .map(|q| quotes.value(*q).expect("every pillar quote was read above"))
+            .collect(),
         pillar_quotes,
         zero_bump: shift,
     })
@@ -182,6 +188,13 @@ impl BuiltCurve {
     }
 
     /// Input quote behind each node and each ladder bucket, in node order.
+    /// The input quote (rate, or price for a future) behind each node, in
+    /// node order. With `keys` this is the par curve a screen plots next to
+    /// the zero curve.
+    pub fn par_quotes(&self) -> &[f64] {
+        &self.par_quotes
+    }
+
     pub fn pillar_quotes(&self) -> &[QuoteId] {
         &self.pillar_quotes
     }
@@ -323,6 +336,22 @@ mod tests {
 
     fn close(a: f64, b: f64, rel: f64) -> bool {
         (a - b).abs() <= rel * a.abs().max(b.abs()).max(1.0)
+    }
+
+    #[test]
+    fn par_quotes_are_the_inputs_in_node_order() {
+        let (curve, _) = built();
+        let snap = snapshot(10, &[ticks(0, 1, 0.0)]);
+        assert_eq!(curve.par_quotes().len(), curve.node_count());
+        // Node j's par quote is the snapshot value of the quote id beside it,
+        // and the quote ids are a permutation of the pillars.
+        for j in 0..curve.node_count() {
+            let q = curve.pillar_quotes()[j];
+            assert_eq!(Some(curve.par_quotes()[j]), snap.value(q), "node {j}");
+        }
+        let mut ids: Vec<u32> = curve.pillar_quotes().iter().map(|q| q.0).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, (0..QUOTES.len() as u32).collect::<Vec<_>>());
     }
 
     #[test]
