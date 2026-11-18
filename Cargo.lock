@@ -1226,11 +1226,14 @@ dependencies = [
 name = "riskrt-proto"
 version = "0.1.0"
 dependencies = [
+ "fq-core",
+ "fq-rates",
  "prost",
  "protox",
  "riskrt-agg",
  "riskrt-core",
  "riskrt-curves",
+ "riskrt-market",
  "riskrt-sched",
  "tonic",
  "tonic-prost",

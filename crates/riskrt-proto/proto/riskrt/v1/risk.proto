@@ -26,6 +26,12 @@ service Risk {
   // only the quotes that changed since the client's last version.
   rpc SubscribeQuotes(QuoteSubscription) returns (stream QuoteUpdate);
 
+  // Live curve shapes: per curve set version, every built curve's nodes
+  // (zero rate, discount factor, the par quote behind it) and health, plus
+  // an optional sampled grid for drawing. Same versions as SubscribeRisk, so
+  // a screen can show the curve and the risk against it from one state.
+  rpc SubscribeCurves(CurveSubscription) returns (stream CurveUpdate);
+
   // Reprice one trade now against the current curve set, outside the
   // pipeline. For ad-hoc checks; the stream is the source of truth.
   rpc Price(PriceRequest) returns (PricedTrade);
@@ -197,6 +203,62 @@ message QuoteUpdate {
   uint64 version = 1;
   // Changed since the previous update on this stream (all of them on the first).
   repeated Quote quotes = 2;
+}
+
+message CurveSubscription {
+  uint32 min_interval_ms = 1;
+  // If > 0, each curve also carries zero rates and discount factors sampled
+  // every this many months from the reference date to the last node, so a
+  // client can draw the interpolated curve without knowing the
+  // interpolation. 0 sends nodes only.
+  uint32 sample_months = 2;
+  // Send only the curves whose build changed since the previous update on
+  // this stream. The first update always carries every built curve.
+  bool changed_only = 3;
+}
+
+message CurveNode {
+  // Node (instrument maturity) date, days since 1970-01-01.
+  int32 day = 1;
+  // Continuously compounded zero rate to the node.
+  double zero_rate = 2;
+  double discount = 3;
+  // The input quote the node was bootstrapped from: a rate for deposits and
+  // OIS, a price for futures. With CurveInfo.pillars this is the par curve.
+  double par_quote = 4;
+  uint32 quote_id = 5;
+  // e.g. "OIS 5Y"
+  string label = 6;
+}
+
+message CurvePoint {
+  int32 day = 1;
+  double zero_rate = 2;
+  double discount = 3;
+}
+
+message CurveShape {
+  uint32 curve_id = 1;
+  // Quote version this build came from.
+  uint64 quotes_version = 2;
+  // Curve reference date, days since 1970-01-01.
+  int32 reference_day = 3;
+  // In node order, which is also the ladder's bucket order.
+  repeated CurveNode nodes = 4;
+  // Only when CurveSubscription.sample_months > 0.
+  repeated CurvePoint samples = 5;
+  CurveHealth health = 6;
+}
+
+message CurveUpdate {
+  // Curve set version.
+  uint64 version = 1;
+  uint64 quotes_version = 2;
+  // Every built curve, or only the changed ones with changed_only.
+  repeated CurveShape curves = 3;
+  // One per curve, indexed by curve_id, including unbuilt curves (which
+  // have no CurveShape yet).
+  repeated CurveHealth curve_health = 4;
 }
 
 message PriceRequest {
