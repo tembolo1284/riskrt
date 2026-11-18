@@ -58,6 +58,8 @@ git clone https://github.com/tembolo1284/ferrumquant ../ferrumquant
 
 Done: the full pipeline with conflation and versioning, par-quote bucket risk through a Jacobian, per-curve health and per-trade status with failure injection tests, gRPC streaming of risk, curve shapes and quotes, CI, and criterion plus end-to-end latency benches. 161 tests.
 
-Known limitations: one valuation date per session, an immutable portfolio per session, single-curve swaps only, no core pinning yet, and ferrumquant unpinned by choice while both repositories move.
+On a 16-core laptop a tick reaches a published curve in 1.4 ms and every trade on that curve is repriced with ladders in 4.7 ms (median, 5.9 ms p99); a full 2,000-trade reprice is 5.3 ms. Details and the 2-core figures in [docs/validation.md](docs/validation.md#benchmarks).
 
-Next: a commodities slice on ferrumquant's `fq-commod-core`, `fq-gas` and `fq-oil`; core pinning judged by the `quote_to_risk` bench; `riskrt-scenario` for whole-portfolio shifts and twists.
+Known limitations: one valuation date per session, an immutable portfolio per session, single-curve swaps only, and ferrumquant unpinned by choice while both repositories move.
+
+Next: real instruments and a portfolio file (on-the-run Treasuries, a futures strip, spot OIS) and replayable market data for the desk screen; a commodities slice on ferrumquant's `fq-commod-core`, `fq-gas` and `fq-oil`; `riskrt-scenario` for whole-portfolio shifts and twists.

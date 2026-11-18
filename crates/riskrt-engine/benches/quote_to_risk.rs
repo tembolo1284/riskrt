@@ -45,7 +45,7 @@ fn parse_opts() -> Opts {
         curves: 3,
         rate: 2_000,
         workers: 0,
-        curve_workers: 2,
+        curve_workers: riskrt_engine::default_curve_workers(),
     };
     let args: Vec<String> = std::env::args().collect();
     fn val<T: std::str::FromStr>(args: &[String], i: usize, cur: T) -> T {

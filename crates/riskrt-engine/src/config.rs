@@ -16,11 +16,20 @@ pub struct EngineConfig {
     pub sched: SchedConfig,
     /// Threads for the curve builder's bumped bootstraps. `0` uses rayon's
     /// global pool; a dedicated pool keeps curve builds off the pricing workers.
+    /// Defaults to `default_curve_workers()`.
     pub curve_workers: usize,
     /// Tick channel capacity between feeds and the conflator.
     pub tick_capacity: usize,
     /// Most ticks the conflator takes in one drain before flushing a batch.
     pub conflate_max_drain: usize,
+}
+
+/// Eight, or the core count if smaller. A ten-pillar build is 20 bumped
+/// bootstraps on the pool; the `curve_build` bench shows it at its floor by
+/// 8 threads (1.2 ms on a 16-core machine) and slightly slower at 16 and 32
+/// from scheduling cost. Three curves ticking at once share this pool.
+pub fn default_curve_workers() -> usize {
+    std::thread::available_parallelism().map_or(8, |n| n.get().min(8))
 }
 
 impl EngineConfig {
@@ -31,7 +40,7 @@ impl EngineConfig {
             index: Arc::new(OvernightIndex::sofr()),
             build: BuildConfig::default(),
             sched: SchedConfig::default(),
-            curve_workers: 2,
+            curve_workers: default_curve_workers(),
             tick_capacity: 4_096,
             conflate_max_drain: 4_096,
         }

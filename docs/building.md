@@ -43,7 +43,7 @@ Useful flags:
 | `--curves` | 3 | Number of curves, one simulated feed each |
 | `--books` | 4 | Number of books to roll up by |
 | `--workers` | 0 (one per core) | Pricing worker threads |
-| `--curve-workers` | 2 | Threads for the bumped bootstraps |
+| `--curve-workers` | 8 (or the core count) | Threads for the bumped bootstraps; see the `curve_build` bench |
 | `--rate` | 2000 | Ticks per second per feed, 0 for unpaced |
 | `--seconds` | 10 | Run length, 0 to run until the feeds end |
 | `--ticks` | 0 (endless) | Ticks per feed before it ends |

@@ -21,7 +21,7 @@ pub mod demo;
 pub mod engine;
 pub mod error;
 
-pub use config::EngineConfig;
+pub use config::{EngineConfig, default_curve_workers};
 pub use engine::{Engine, EngineStats};
 pub use error::EngineError;
 

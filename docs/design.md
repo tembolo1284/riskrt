@@ -181,4 +181,4 @@ For a run with F feeds, W pricing workers and C curve workers, the engine has F 
 
 The two rayon pools are separate on purpose, so that curve builds (a few milliseconds each, bursty) do not compete with pricing workers for the same threads. `--curve-workers 0` folds curve builds onto rayon's global pool instead.
 
-Core pinning is not implemented yet. The right place for it is the pools' `start_handler`, and the decision waits on the benchmarks.
+Core pinning is not implemented. The benchmarks in [validation.md](validation.md#benchmarks) show the engine bounded by arithmetic (the bootstrap and the per-trade ladder), not by threads contending for cores, so pinning would not move the numbers on current hardware. The right place for it, if that changes, is the pools' `start_handler`.

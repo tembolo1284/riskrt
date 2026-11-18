@@ -29,8 +29,8 @@ struct Args {
     /// Pricing worker threads (0 = one per core).
     #[arg(long, default_value_t = 0)]
     workers: usize,
-    /// Curve-build threads (0 = rayon's global pool).
-    #[arg(long, default_value_t = 2)]
+    /// Curve-build threads (0 = rayon's global pool). Default: 8, or the core count if smaller.
+    #[arg(long, default_value_t = riskrt_engine::default_curve_workers())]
     curve_workers: usize,
     /// Ticks per second per feed (0 = as fast as possible).
     #[arg(long, default_value_t = 2_000)]

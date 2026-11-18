@@ -58,20 +58,32 @@ Three benches in `crates/riskrt-engine/benches`, run with `./build.sh bench` (or
 
 `quote_to_risk` takes `--iters`, `--warmup`, `--trades`, `--curves`, `--rate`, `--workers` and `--curve-workers`, and prints a Markdown row per scenario.
 
-Numbers from the 2-core development container (2,000 trades, 3 curves, 2 pricing workers, 2 curve workers), to show the shape rather than the ceiling. Run it on real hardware for real numbers.
+Numbers from a 16-core, 32-thread laptop (2,000 trades, 3 curves, 32 pricing workers), with the 2-core development container beside them for shape. Throughput is in trades per second (criterion prints it as Kelem/s, thousands of elements per second).
 
-| Microbenchmark | 1 thread | 2 threads |
+| Microbenchmark | 16-core laptop | 2-core container |
 |---|---|---|
-| bootstrap, 10 pillars | 183 µs | |
-| build_curve, 10 pillars | 4.31 ms | 2.36 ms |
-| price_one, swap | 37 µs | |
-| price_one, bond | 3.5 µs | |
-| price_batch, 2,000 trades | 58 ms (34k trades/s) | 34 ms (60k trades/s) |
+| bootstrap, 10 pillars | 137 µs | 183 µs |
+| build_curve, 10 pillars, 1 thread | 3.16 ms | 4.31 ms |
+| build_curve, 2 / 4 / 8 threads | 1.70 / 1.34 / 1.20 ms | 2.36 ms (2) |
+| build_curve, 16 / 32 threads | 1.42 / 1.43 ms | |
+| price_one, swap (with 10-bucket ladder) | 29 µs | 37 µs |
+| price_one, bond | 3.2 µs | 3.5 µs |
+| price_batch, 2,000 trades, 1 thread | 46.9 ms (43k trades/s) | 58 ms (34k/s) |
+| price_batch, 2 / 4 / 8 threads | 24.3 / 12.4 / 7.15 ms | 34 ms (2) |
+| price_batch, 16 / 32 threads | 5.26 / 5.32 ms (380k trades/s) | |
 
-| quote_to_risk | p50 ms | p95 ms | p99 ms | max ms |
+| quote_to_risk, 16-core laptop | p50 ms | p95 ms | p99 ms | max ms |
 |---|---|---|---|---|
-| idle (quote to curve) | 2.4 | 3.7 | 4.9 | 7.8 |
-| idle (quote to risk) | 13.3 | 17.4 | 20.5 | 21.0 |
-| loaded, 2,000 ticks/s on each other curve (quote to risk) | 103 | 134 | 146 | 155 |
+| idle, quote to curve (8 curve workers) | 1.38 | 1.75 | 1.93 | 2.37 |
+| idle, quote to risk (8 curve workers) | 4.70 | 5.47 | 5.88 | 6.79 |
+| idle, quote to risk (2 curve workers, the old default) | 5.34 | 6.22 | 6.66 | 7.87 |
+| loaded, 2,000 ticks/s on each other curve, quote to curve (8 curve workers) | 4.26 | 5.30 | 5.95 | 6.98 |
+| loaded, quote to risk (8 curve workers) | 12.96 | 18.07 | 19.51 | 20.47 |
+| loaded, quote to risk (2 curve workers) | 16.58 | 19.95 | 21.90 | 24.70 |
 
-What the shape says. The Jacobian scales with cores (4.3 ms to 2.4 ms on two threads) and is the floor of quote-to-curve. Pricing scales with workers at about 1.75x on two threads, with the remainder being the bootstrap and the aggregator on the same two cores. The loaded scenario is the two pools and the feed threads contending for two cores: the curve builder and the pricing workers each slow the other down, so the one-at-a-time latency is about eight times the idle figure. On a machine with cores to separate the pools this gap is what core pinning should close, and this bench is how to tell whether it did.
+| quote_to_risk, 2-core container | p50 ms | p95 ms | p99 ms | max ms |
+|---|---|---|---|---|
+| idle, quote to risk | 13.3 | 17.4 | 20.5 | 21.0 |
+| loaded, quote to risk | 103 | 134 | 146 | 155 |
+
+What the shape says. A curve build is 21 bootstraps of 137 µs; the 20 bumped ones parallelise, so the build goes from 3.2 ms serial to 1.2 ms at 8 threads and then stops improving, because there are only 20 jobs to hand out and the base bootstrap is serial. That is why the curve pool defaults to 8. Pricing scales almost perfectly to 4 threads, 6.6x at 8 and 8.9x at 16, then flat at 32: the work is floating-point bound and the second hyperthread on each physical core has nothing to add, so a 2,000-trade full reprice floors at 5.3 ms on this machine. Idle quote-to-risk (4.7 ms) is one curve build followed by a reprice of that curve's 670 trades. Loaded quote-to-risk (13 ms) is the same path waiting behind a build cycle and a 2,000-trade batch already in flight, since every curve is dirty on every round. Nothing in these numbers is threads fighting for cores, which is why core pinning is not on the list. On the 2-core container the loaded figure is eight times idle for the opposite reason: there the pools do contend, with only two cores for everything.
